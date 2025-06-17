@@ -35,13 +35,16 @@ class IDecisionEngine(Protocol):
 # 구체적인 판단 기준들 (단일 책임 원칙)
 # ============================================================================
 
+# core/hybrid_decision.py 파일을 열고 아래 내용으로 교체하세요.
+
 class ComplexityDetector:
-    """복잡성 감지기"""
+    """복잡성 감지기 (개선 버전)"""
     
     def __init__(self):
         self.complexity_indicators = [
-            "자세히", "구체적으로", "설명해", "어떻게", "왜", "뭐예요",
-            "어디예요", "누구예요", "언제예요", "무슨 뜻", "의미"
+            "자세히", "구체적으로", "설명", "어떻게", "왜", "뭐예요",
+            "어디예요", "누구예요", "언제예요", "무슨 뜻", "의미",
+            "방법", "조치", "무엇을", "어떡하죠", "궁금"  # <-- 핵심 키워드 추가
         ]
     
     def evaluate(self, user_input: str, context: Dict[str, Any]) -> float:
@@ -50,36 +53,29 @@ class ComplexityDetector:
             return 0.0
         
         user_lower = user_input.lower()
-        complexity_score = 0.0
+        score = 0.0
         
         # 질문 키워드 체크
         for indicator in self.complexity_indicators:
             if indicator in user_lower:
-                complexity_score += 0.3
+                score += 0.4  # 점수 상향
+                break # 하나만 찾아도 충분히 복잡한 질문으로 간주
         
-        # 문장 길이 체크 (긴 문장은 복잡할 가능성)
-        if len(user_input) > 50:
-            complexity_score += 0.2
+        # 문장 길이 체크 (15자 이상이면 질문일 가능성 높음)
+        if len(user_input) > 15 and "?" in user_input or "요" in user_input:
+            score += 0.2
         
-        # 연결어 체크 (복잡한 문맥)
-        conjunctions = ["그런데", "하지만", "그리고", "또한", "만약"]
-        for conj in conjunctions:
-            if conj in user_lower:
-                complexity_score += 0.2
-                break
-        
-        return min(complexity_score, 1.0)
+        return min(score, 1.0)
     
     def get_reason(self) -> str:
-        return "복잡한 질문 감지"
+        return "복잡한 질문 또는 설명 요청 감지"
 
 class ContextMismatchDetector:
-    """문맥 불일치 감지기"""
+    """문맥 불일치 감지기 (개선 버전)"""
     
     def __init__(self):
         self.mismatch_indicators = [
-            "말고", "아니라", "다른거", "그런게 아니라", "추가로", "또",
-            "대신에", "다른 방법", "별로", "도움 안"
+            "말고", "아니라", "다른", "그런게 아니라", "추가로", "또"
         ]
     
     def evaluate(self, user_input: str, context: Dict[str, Any]) -> float:
@@ -88,35 +84,35 @@ class ContextMismatchDetector:
             return 0.0
         
         user_lower = user_input.lower()
-        mismatch_score = 0.0
+        score = 0.0
         
         # 명시적 반박 표현
         for indicator in self.mismatch_indicators:
             if indicator in user_lower:
-                mismatch_score += 0.4
+                score += 0.6 # 점수 대폭 상향
                 break
-        
-        # 이전 AI 응답과의 관계 체크
+
+        # AI가 이전에 했던 말을 사용자가 다시 질문하는 경우 (예: "112번이요" 했는데 다시 "112번이 뭐죠?")
         last_ai_response = context.get("last_ai_response", "")
         if last_ai_response:
-            # AI가 제안한 것을 명시적으로 거부하는 경우
-            if "132" in last_ai_response and "132 말고" in user_lower:
-                mismatch_score += 0.5
-            elif "1811" in last_ai_response and "1811 말고" in user_lower:
-                mismatch_score += 0.5
-        
-        return min(mismatch_score, 1.0)
+            if "132" in last_ai_response and "132" in user_lower and len(user_lower) > 5:
+                score += 0.5
+            elif "1811" in last_ai_response and "1811" in user_lower and len(user_lower) > 10:
+                score += 0.5
+
+        return min(score, 1.0)
     
     def get_reason(self) -> str:
-        return "문맥 불일치 감지"
+        return "문맥 불일치 또는 이전 답변에 대한 추가 질문 감지"
 
 class DissatisfactionDetector:
-    """불만족 감지기"""
+    """불만족 감지기 (개선 버전)"""
     
     def __init__(self):
         self.dissatisfaction_indicators = [
             "이해 못하겠", "모르겠", "헷갈려", "어려워", "복잡해",
-            "제대로", "정확히", "확실히", "더 쉽게", "간단하게"
+            "제대로", "정확히", "확실히", "더 쉽게", "간단하게",
+            "상황을 묻지 말고", "자꾸 같은 말", "답변이 이상" # <-- 사용자 불만 직접 감지
         ]
     
     def evaluate(self, user_input: str, context: Dict[str, Any]) -> float:
@@ -125,26 +121,18 @@ class DissatisfactionDetector:
             return 0.0
         
         user_lower = user_input.lower()
-        dissatisfaction_score = 0.0
+        score = 0.0
         
         # 불만족 표현 체크
         for indicator in self.dissatisfaction_indicators:
             if indicator in user_lower:
-                dissatisfaction_score += 0.3
+                score += 0.7  # 점수 대폭 상향
+                break
         
-        # 반복적인 "아니" 표현
-        if user_lower.count("아니") >= 2:
-            dissatisfaction_score += 0.4
-        
-        # 대화 턴 수 고려 (많은 턴 후 불만족은 더 심각)
-        turns = context.get("conversation_turns", 0)
-        if turns >= 3 and dissatisfaction_score > 0:
-            dissatisfaction_score += 0.2
-        
-        return min(dissatisfaction_score, 1.0)
+        return min(score, 1.0)
     
     def get_reason(self) -> str:
-        return "사용자 불만족 감지"
+        return "사용자 불만족 또는 재설명 요청 감지"
 
 class EmergencyDetector:
     """응급 상황 감지기"""

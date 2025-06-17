@@ -23,6 +23,8 @@ sys.path.insert(0, current_dir)
 from langgraph.graph import StateGraph, START, END
 from core.state import VictimRecoveryState, create_initial_recovery_state
 
+from core.hybrid_decision import SimplifiedHybridDecisionEngine
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -110,6 +112,8 @@ class VictimInfoAssessment:
         self.current_step = 0
         self.responses = {}
         self.urgent_actions = []
+
+        self.immediate_action_delivered = False
         
     def get_next_question(self) -> str:
         """다음 질문 반환"""
@@ -140,7 +144,8 @@ class VictimInfoAssessment:
         self.current_step += 1
         
         # 즉시 조치가 필요한지 확인
-        if self._needs_immediate_action():
+        if self._needs_immediate_action() and not self.immediate_action_delivered:
+            self.immediate_action_delivered = True  # 메시지를 전달했다고 표시
             return self._get_immediate_action()
         
         return self.get_next_question()
@@ -261,14 +266,16 @@ class EmergencyHandler:
 # ============================================================================
 
 class PersonalizedConsultationStrategy:
-    """개인 맞춤형 상담 전략 (2번 선택)"""
+    """개인 맞춤형 상담 전략 (2번 선택) - 수정된 버전"""
     
     def __init__(self):
         self.emergency_handler = EmergencyHandler()
         self.conversation_turns = 0
         self.user_situation = {}
         
-        # 상황별 맞춤 응답 패턴
+        # (중요!) 하이브리드 의사결정 엔진을 여기서 생성하고 사용합니다.
+        self.decision_engine = SimplifiedHybridDecisionEngine(debug=True)
+        
         self.situation_patterns = {
             "prevention": {
                 "keywords": ["예방", "미리", "설정", "막기"],
@@ -281,61 +288,54 @@ class PersonalizedConsultationStrategy:
             "suspicious": {
                 "keywords": ["의심", "이상", "확인", "맞나"],
                 "response": "의심스러우면 절대 응답하지 마시고 132번으로 확인하세요."
-            },
-            "help_request": {
-                "keywords": ["도와", "도움", "알려", "방법", "어떻게"],
-                "response": "상황을 좀 더 구체적으로 말씀해 주세요. 어떤 일이 있으셨나요?"
             }
         }
     
     async def process_input(self, user_input: str, context: Dict[str, Any] = None) -> str:
-        """사용자 입력 처리"""
+        """사용자 입력 처리 (의사결정 엔진 사용)"""
         self.conversation_turns += 1
         
-        # 1. 응급도 감지
-        urgency = self.emergency_handler.detect_emergency(user_input)
         
-        # 2. 응급 상황이면 즉시 처리
+        # 1. 응급 상황은 최우선으로 처리
+        urgency = self.emergency_handler.detect_emergency(user_input)
         if urgency >= 8:
             return self.emergency_handler.get_emergency_response(urgency)
         
-        # 3. 상황 분석 및 맞춤 응답
-        situation_type = self._analyze_situation(user_input)
+        # 2. 하이브리드 엔진을 사용하여 Gemini 사용 여부 결정
+        if not context:
+            context = {}
+        context["conversation_turns"] = self.conversation_turns
         
-        # 4. Gemini 활용 여부 결정
-        if self._should_use_gemini(user_input, situation_type):
+        # 여기서 정교한 판단이 이루어집니다.
+        decision = self.decision_engine.should_use_gemini(user_input, context)
+        
+        # 3. 결정에 따라 Gemini를 호출하거나 룰 기반으로 응답
+        if decision.get("use_gemini"):
+            # Gemini를 사용하여 깊이 있는 답변 생성
             return await self._get_gemini_response(user_input, context)
-        
-        # 5. 룰 기반 응답
-        return self._get_rule_based_response(user_input, situation_type)
-    
-    def _analyze_situation(self, text: str) -> str:
-        """상황 분석"""
-        text_lower = text.lower()
+        else:
+            # 룰 기반으로 빠르고 간단한 답변 제공
+            return self._get_rule_based_response(user_input)
+
+    # _get_rule_based_response를 약간 수정합니다.
+    def _get_rule_based_response(self, user_input: str) -> str:
+        """룰 기반 응답 (situation 인자 없이 독립적으로 작동)"""
+        text_lower = user_input.lower()
         
         for situation, data in self.situation_patterns.items():
             if any(keyword in text_lower for keyword in data["keywords"]):
-                return situation
-        
-        return "general"
-    
-    def _should_use_gemini(self, user_input: str, situation: str) -> bool:
-        """Gemini 사용 여부 결정"""
-        # 복잡한 질문이나 설명 요청시 Gemini 활용
-        complex_indicators = [
-            "자세히", "구체적으로", "설명", "어떻게", "왜", "뭐예요",
-            "말고", "다른", "또", "추가로"
-        ]
-        
-        return any(indicator in user_input.lower() for indicator in complex_indicators)
+                return data["response"]
+
+        # Gemini를 쓰지 않기로 결정했을 때의 최종 폴백 응답
+        return "상황을 좀 더 구체적으로 말씀해 주시면 더 정확한 도움을 드릴 수 있습니다."
     
     async def _get_gemini_response(self, user_input: str, context: Dict[str, Any]) -> str:
         """Gemini 응답 생성"""
         try:
-            from services.gemini_assistant3 import gemini_assistant
+            from services.gemini_assistant import gemini_assistant
             
             if not gemini_assistant.is_enabled:
-                return self._get_rule_based_response(user_input, "general")
+                return self._get_rule_based_response(user_input) # 여기도 수정
             
             # Gemini에 상황 정보 제공
             enhanced_context = {
@@ -357,24 +357,8 @@ class PersonalizedConsultationStrategy:
             logger.warning(f"Gemini 처리 실패: {e}")
         
         # 폴백: 룰 기반
-        return self._get_rule_based_response(user_input, "general")
-    
-    def _get_rule_based_response(self, user_input: str, situation: str) -> str:
-        """룰 기반 응답"""
-        # 상황별 맞춤 응답
-        if situation in self.situation_patterns:
-            base_response = self.situation_patterns[situation]["response"]
-            
-            # 상황에 따른 추가 정보
-            if situation == "prevention":
-                return f"{base_response} 자세한 방법은 132번으로 문의하세요."
-            elif situation == "post_damage":
-                return f"{base_response} 지원금은 최대 300만원까지 가능합니다."
-            
-            return base_response
-        
-        # 기본 응답
-        return "상황을 좀 더 구체적으로 말씀해 주시면 더 정확한 도움을 드릴 수 있습니다."
+        # return self._get_rule_based_response(user_input, "general")
+        # return self._get_rule_based_response(user_input)
     
     def is_complete(self) -> bool:
         """대화 완료 여부"""
@@ -467,13 +451,11 @@ class VoiceFriendlyPhishingGraph:
         return response
     
     async def _handle_assessment_mode(self, user_input: str) -> str:
-        """평가 모드 처리"""
-        if self.victim_assessment.is_complete():
-            self.conversation_mode = "consultation"
-            return "평가가 완료되었습니다. 추가 질문이 있으시면 말씀해주세요."
+        """평가 모드 처리 - 수정된 버전"""
         
-        return self.victim_assessment.process_answer(user_input)
-    
+        # 답변을 먼저 처리합니다.
+        response = self.victim_assessment.process_answer(user_input)
+        
         # 평가가 방금 완료되었는지 확인합니다.
         if self.victim_assessment.is_complete():
             self.conversation_mode = "consultation" # 상담 모드로 전환
@@ -737,12 +719,8 @@ class VoiceFriendlyPhishingGraph:
     def _get_mode_selection_message(self) -> str:
         """모드 선택 메시지"""
         return """안녕하세요. 보이스피싱 상담센터입니다.
-
-어떤 도움이 필요하신가요?
-
-1번: 피해 상황 체크리스트 (단계별 확인)
-2번: 맞춤형 상담 (상황에 맞는 조치)
-
+1번은 피해 상황 체크리스트 (단계별 확인)
+2번은 맞춤형 상담 (상황에 맞는 조치)
 1번 또는 2번이라고 말씀해주세요."""
     
     def _get_simple_consultation_response(self, user_input: str) -> str:
