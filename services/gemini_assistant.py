@@ -1,576 +1,358 @@
-# services/gemini_assistant.py 개선 버전 (수정됨)
+"""
+최적화된 Gemini 어시스턴트 - SOLID 원칙 적용
+- 단일 책임: 복잡한 사용자 질문에 대한 맞춤형 응답 생성만 담당
+- 개방-폐쇄: 새로운 응답 전략 추가 가능
+- 의존 역전: 추상화된 응답 전략 인터페이스 사용
+"""
 
 import asyncio
 import logging
 import json
-import os
+import re
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Protocol
+from abc import ABC, abstractmethod
 
 try:
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
-    logging.warning("google-generativeai 패키지가 설치되지 않음. pip install google-generativeai")
+    logging.warning("google-generativeai 패키지가 설치되지 않음")
 
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-class ImprovedGeminiAssistant:
+# ============================================================================
+# 응답 전략 인터페이스 (SOLID - 인터페이스 분리 원칙)
+# ============================================================================
+
+class IResponseStrategy(Protocol):
+    """응답 전략 인터페이스"""
+    def generate_prompt(self, user_input: str, context: Dict[str, Any]) -> str:
+        """프롬프트 생성"""
+        ...
+    
+    def validate_response(self, response: str) -> bool:
+        """응답 검증"""
+        ...
+
+# ============================================================================
+# 구체적인 응답 전략들 (전략 패턴)
+# ============================================================================
+
+class ExplanationStrategy:
+    """설명 요청 전략"""
+    
+    def generate_prompt(self, user_input: str, context: Dict[str, Any]) -> str:
+        return f"""사용자가 설명을 요청했습니다: "{user_input}"
+
+다음 중 해당하는 내용을 80자 이내로 명확하게 설명하세요:
+
+1. 132번 → 대한법률구조공단 무료 법률상담
+2. 1811-0041번 → 보이스피싱제로 생활비 지원 (최대 300만원)
+3. PASS 앱 → 명의도용방지서비스 신청
+4. mSAFER → 휴대폰 명의도용 차단 서비스
+5. 지급정지 → 사기 계좌로의 송금 차단
+
+JSON 형식으로 응답: {{"response": "80자 이내 설명"}}"""
+    
+    def validate_response(self, response: str) -> bool:
+        """설명 응답 검증"""
+        return (len(response) <= 80 and 
+                any(keyword in response for keyword in ["132", "1811", "PASS", "mSAFER", "지급정지"]))
+
+class AlternativeStrategy:
+    """대안 요청 전략"""
+    
+    def generate_prompt(self, user_input: str, context: Dict[str, Any]) -> str:
+        return f"""사용자가 다른 방법을 요청했습니다: "{user_input}"
+
+기존 제안과 다른 실용적인 대안을 80자 이내로 제시하세요:
+
+- 132번 상담 외에 → 1811-0041번 지원 신청
+- PASS 앱 외에 → mSAFER 서비스 이용
+- 예방 방법 외에 → 사후 대처 방법
+- 개인 조치 외에 → 전문기관 도움
+
+JSON 형식으로 응답: {{"response": "80자 이내 대안 제시"}}"""
+    
+    def validate_response(self, response: str) -> bool:
+        """대안 응답 검증"""
+        return (len(response) <= 80 and
+                any(keyword in response for keyword in ["대신", "다른", "또는", "방법"]))
+
+class ClarificationStrategy:
+    """명확화 요청 전략"""
+    
+    def generate_prompt(self, user_input: str, context: Dict[str, Any]) -> str:
+        return f"""사용자의 말이 명확하지 않습니다: "{user_input}"
+
+상황을 파악하기 위한 구체적인 질문을 80자 이내로 하세요:
+
+보이스피싱 상담 맥락에서:
+- 현재 상황이 무엇인지
+- 어떤 도움이 필요한지
+- 피해를 당했는지 예방하려는지
+
+친근하고 도움이 되는 톤으로 질문하세요.
+
+JSON 형식으로 응답: {{"response": "80자 이내 명확화 질문"}}"""
+    
+    def validate_response(self, response: str) -> bool:
+        """명확화 응답 검증"""
+        return (len(response) <= 80 and 
+                ("?" in response or "까요" in response))
+
+# ============================================================================
+# 최적화된 Gemini 어시스턴트 (SOLID 원칙 적용)
+# ============================================================================
+
+class OptimizedGeminiAssistant:
     """
-    개선된 Gemini 보이스피싱 상담 어시스턴트
-    - 의미없는 입력 처리 강화
-    - 상황별 맞춤 응답 생성
-    - 응답 품질 검증 강화
-    - 실질적 도움 중심
+    최적화된 Gemini 보이스피싱 상담 어시스턴트
+    - 명확한 단일 책임: 복잡한 질문에 대한 맞춤형 응답 생성
+    - 빠른 응답 (3초 이내)
+    - 80자 이내 제한
+    - 실용적 도움 중심
     """
     
     def __init__(self):
         self.is_enabled = False
-        
-        # Gemini 사용 가능성 체크
-        if not GEMINI_AVAILABLE:
-            logger.warning("❌ Gemini 라이브러리 없음 - 구조화된 모드 사용")
-            return
-            
-        if not settings.GEMINI_API_KEY:
-            logger.warning("❌ GEMINI_API_KEY 없음 - 구조화된 모드 사용")
-            return
+        self.model = None
         
         # Gemini 초기화
-        try:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            self.model = genai.GenerativeModel(
-                model_name=settings.GEMINI_MODEL,
-                generation_config={
-                    "temperature": 0.3,  # 더 일관된 응답
-                    "top_p": 0.8,
-                    "top_k": 40,
-                    "max_output_tokens": 200,  # 응답 길이 제한
-                }
-            )
-            self.is_enabled = True
-            logger.info("✅ 개선된 Gemini AI 초기화 완료")
-        except Exception as e:
-            logger.error(f"❌ Gemini 초기화 실패: {e}")
-            self.is_enabled = False
+        if GEMINI_AVAILABLE and settings.GEMINI_API_KEY:
+            try:
+                genai.configure(api_key=settings.GEMINI_API_KEY)
+                self.model = genai.GenerativeModel(
+                    model_name=settings.GEMINI_MODEL,
+                    generation_config={
+                        "temperature": 0.2,  # 일관된 응답
+                        "top_p": 0.8,
+                        "top_k": 20,
+                        "max_output_tokens": 150,  # 응답 길이 제한
+                    }
+                )
+                self.is_enabled = True
+                logger.info("✅ 최적화된 Gemini 초기화 완료")
+            except Exception as e:
+                logger.error(f"❌ Gemini 초기화 실패: {e}")
+                self.is_enabled = False
+        else:
+            logger.warning("❌ Gemini 사용 불가 - API 키 없음 또는 라이브러리 없음")
+        
+        # 응답 전략들 (전략 패턴)
+        self.strategies = {
+            "explanation": ExplanationStrategy(),
+            "alternative": AlternativeStrategy(),
+            "clarification": ClarificationStrategy()
+        }
         
         # 기본 시스템 프롬프트
-        self.base_system_prompt = """당신은 보이스피싱 전문 상담원입니다. 사용자의 상황에 맞는 실질적 도움을 제공하세요.
+        self.base_prompt = """당신은 보이스피싱 전문 상담원입니다.
 
-핵심 원칙:
-1. 80자 이내 간결한 응답 (음성 친화적)
-2. 즉시 실행 가능한 조치 안내
-3. 상황별 맞춤 대응
-
-주요 연락처:
-- 132번: 대한법률구조공단 무료 법률 상담
-- 1811-0041: 보이스피싱제로 생활비 지원 (최대 300만원)
-- 112번: 긴급 신고
-
-주요 서비스:
+핵심 서비스:
+- 132번: 대한법률구조공단 무료 상담
+- 1811-0041번: 보이스피싱제로 생활비 지원
+- PASS 앱: 명의도용방지서비스
 - mSAFER: 휴대폰 명의도용 차단
-- PASS앱: 명의도용방지서비스 신청
-- 지급정지: 사기 계좌로의 송금 차단
 
-응답 형식: 반드시 JSON으로 응답하고, response는 80자를 절대 넘지 마세요
-{"response": "80자 이내 실질적 조치 안내", "urgency_level": 1-10, "next_action": "immediate_help/expert_consultation/prevention/clarification"}"""
+규칙:
+1. 80자 이내 응답 (음성 친화적)
+2. 실용적이고 즉시 실행 가능한 조치 제시
+3. 반드시 JSON 형식으로 응답"""
         
-        # 대화 기록
-        self.conversation_history = []
-        
-        # 개선된 세션 상태
-        self.session_state = {
-            'total_turns': 0,
-            'urgency_level': 3,
-            'practical_guidance_provided': False,
-            'user_satisfaction_level': 5,
-            'repeated_topics': [],
-            'gemini_success_rate': 0.0
-        }
-        
-        # 응답 품질 검증 기준
-        self.quality_criteria = {
-            'max_length': 80,
-            'min_length': 10,
-            'forbidden_phrases': [
-                '잘 모르겠습니다', '확인이 어렵습니다', '죄송합니다',
-                '도움을 드릴 수 없습니다', '정보가 부족합니다'
-            ]
-        }
-        
-        # 성공률 추적
-        self.success_metrics = {
-            'total_requests': 0,
-            'successful_responses': 0,
-            'timeout_count': 0,
-            'validation_failures': 0
+        # 성능 통계
+        self.stats = {
+            "total_requests": 0,
+            "successful_responses": 0,
+            "timeouts": 0,
+            "validation_failures": 0
         }
     
     async def analyze_and_respond(self, user_input: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """개선된 분석 및 응답 생성"""
+        """메인 분석 및 응답 생성"""
         
-        self.success_metrics['total_requests'] += 1
+        self.stats["total_requests"] += 1
         
         if not self.is_enabled:
-            return self._enhanced_rule_based_fallback(user_input, context)
+            return self._create_fallback_response(user_input, "gemini_disabled")
+        
+        if not context:
+            context = {}
         
         try:
-            # 상황 분류
-            situation_type = self._classify_situation(user_input, context)
+            # 1. 상황 분류
+            situation_type = self._classify_situation(user_input)
             
-            # 상황별 맞춤 프롬프트 생성
-            prompt = self._generate_situation_prompt(situation_type, user_input, context)
+            # 2. 적절한 전략 선택
+            strategy = self._select_strategy(situation_type)
             
-            # Gemini API 호출
-            gemini_response = await self._call_gemini_with_validation(prompt, context)
+            # 3. 프롬프트 생성
+            prompt = self._build_prompt(strategy, user_input, context)
             
-            # 응답 후처리 및 강화
-            enhanced_response = self._enhance_response_quality(gemini_response, user_input, situation_type)
+            # 4. Gemini 호출 (타임아웃 적용)
+            response = await asyncio.wait_for(
+                self._call_gemini(prompt),
+                timeout=3.0
+            )
             
-            # 세션 상태 업데이트
-            self._update_session_state(enhanced_response, situation_type)
+            # 5. 응답 검증 및 후처리
+            validated_response = self._validate_and_enhance(response, strategy, user_input)
             
-            # 대화 기록 추가
-            self._add_conversation_record(user_input, enhanced_response)
-            
-            self.success_metrics['successful_responses'] += 1
-            
-            return enhanced_response
+            self.stats["successful_responses"] += 1
+            return validated_response
             
         except asyncio.TimeoutError:
-            self.success_metrics['timeout_count'] += 1
-            logger.warning("Gemini 타임아웃 - 상황별 폴백 사용")
-            return self._situation_based_fallback(user_input, context)
+            self.stats["timeouts"] += 1
+            logger.warning("Gemini 타임아웃 - 폴백 응답")
+            return self._create_fallback_response(user_input, "timeout")
         except Exception as e:
             logger.error(f"Gemini 처리 오류: {e}")
-            return self._enhanced_rule_based_fallback(user_input, context)
+            return self._create_fallback_response(user_input, "error")
     
-    def _classify_situation(self, user_input: str, context: Dict[str, Any] = None) -> str:
+    def _classify_situation(self, user_input: str) -> str:
         """상황 분류"""
         
-        if not user_input or len(user_input.strip()) < 2:
-            return "meaningless"
+        if not user_input or len(user_input.strip()) < 3:
+            return "unclear"
         
         user_lower = user_input.lower()
         
-        # 의미없는 입력 체크 (우선순위)
-        meaningless_patterns = [
-            "안먹", "안했", "못했", "아무거나", "몰라", "그냥",
-            "어어", "음음", "아아", "네네"
-        ]
-        if any(pattern in user_lower for pattern in meaningless_patterns):
-            return "meaningless"
-        
-        # 긴급 상황 체크
-        emergency_keywords = ["돈", "송금", "보냈", "이체", "급해", "사기", "당했", "피해"]
-        if any(keyword in user_lower for keyword in emergency_keywords):
-            return "emergency"
-        
-        # 컨텍스트 불일치 체크
-        if context and context.get('decision_reasons'):
-            reasons = context['decision_reasons']
-            if any("컨텍스트 불일치" in reason for reason in reasons):
-                return "context_mismatch"
-        
-        # 설명 요청 체크
-        explanation_patterns = [
+        # 설명 요청
+        explanation_indicators = [
             "뭐예요", "무엇", "어떤", "설명", "의미", "뜻",
-            "어디예요", "누구", "언제", "왜", "어떻게"
+            "어디예요", "누구", "언제", "어떻게", "왜"
         ]
-        if any(pattern in user_lower for pattern in explanation_patterns):
+        if any(indicator in user_lower for indicator in explanation_indicators):
             return "explanation"
         
-        # 불만족 표현 체크
-        dissatisfaction_patterns = [
-            "아니", "다시", "다른", "더", "또", "별로", "부족",
-            "이해 안", "모르겠", "헷갈", "도움 안"
+        # 대안 요청
+        alternative_indicators = [
+            "말고", "다른", "또", "추가", "대신", "아니라"
         ]
-        if any(pattern in user_lower for pattern in dissatisfaction_patterns):
-            return "dissatisfaction"
+        if any(indicator in user_lower for indicator in alternative_indicators):
+            return "alternative"
+        
+        # 불만족/명확화 필요
+        dissatisfaction_indicators = [
+            "이해 안", "모르겠", "헷갈", "어려워", "복잡해"
+        ]
+        if any(indicator in user_lower for indicator in dissatisfaction_indicators):
+            return "clarification"
         
         return "general"
     
-    def _generate_situation_prompt(self, situation_type: str, user_input: str, context: Dict[str, Any] = None) -> str:
-        """상황별 맞춤 프롬프트 생성"""
+    def _select_strategy(self, situation_type: str) -> IResponseStrategy:
+        """전략 선택"""
         
-        base_context = ""
-        if context:
-            urgency = context.get('urgency_level', 5)
-            turns = context.get('conversation_turns', 0)
-            base_context = f"\n현재 긴급도: {urgency}/10, 대화 턴: {turns}"
+        if situation_type in self.strategies:
+            return self.strategies[situation_type]
         
-        if situation_type == "meaningless":
-            return f"""사용자가 의미없는 말을 했습니다: "{user_input}"
-
-적절한 응답을 선택하세요:
-1. 혼란스러워하는 경우: 진정시키고 구체적 설명 요청
-2. 관련 없는 얘기: 보이스피싱 상담임을 명확히 하고 도움 의도 확인
-3. 실수/오타: 다시 말해달라고 정중히 요청
-
-80자 이내로 상황에 맞는 응답을 생성하세요.{base_context}"""
-            
-        elif situation_type == "context_mismatch":
-            last_ai_response = self._get_last_ai_response()
-            return f"""사용자가 이전 AI 답변과 다른 방향으로 대화하고 있습니다.
-
-이전 AI: "{last_ai_response}"
-사용자: "{user_input}"
-
-사용자의 진짜 의도를 파악해서 도움을 주세요:
-- "말고" → 다른 방법 제시
-- "아니라" → 잘못 이해한 부분 수정
-- 엉뚱한 답변 → 의도 재확인
-
-80자 이내로 사용자가 원하는 대안을 제시하세요.{base_context}"""
-            
-        elif situation_type == "explanation":
-            return f"""사용자가 구체적인 설명을 요청했습니다: "{user_input}"
-
-요청된 내용을 명확하고 이해하기 쉽게 설명하세요:
-- 132번, 1811-0041번 등 연락처의 역할
-- mSAFER, PASS앱 등 서비스 기능
-- 지급정지 등 전문용어의 의미
-- 구체적인 이용 방법
-
-80자 이내로 핵심만 간단명료하게 설명하세요.{base_context}"""
-            
-        elif situation_type == "dissatisfaction":
-            return f"""사용자가 불만족을 표현했습니다: "{user_input}"
-
-사용자의 불만을 해결할 수 있는 방법을 제시하세요:
-- 더 구체적이고 실용적인 도움 방법
-- 다른 연락처나 서비스 소개
-- 전문가 직접 상담 연결 안내
-
-80자 이내로 만족할 만한 대안을 제시하세요.{base_context}"""
-            
-        elif situation_type == "emergency":
-            return f"""긴급 상황입니다: "{user_input}"
-
-즉시 취해야 할 조치를 우선순위대로 안내하세요:
-1. 긴급 신고나 차단 조치
-2. 전문 상담 연결
-3. 추가 피해 방지 방법
-
-80자 이내로 가장 중요한 조치 1-2개만 명확히 안내하세요.{base_context}"""
-            
-        else:  # general
-            return f"""사용자 질문: "{user_input}"
-
-보이스피싱 상담 맥락에서 가장 도움이 되는 조치를 안내하세요:
-- 상황에 맞는 적절한 서비스나 연락처
-- 구체적이고 실행 가능한 다음 단계
-- 추가 도움이 필요한 경우의 안내
-
-80자 이내로 실질적 도움을 제공하세요.{base_context}"""
+        # 기본값: 명확화 전략
+        return self.strategies["clarification"]
     
-    async def _call_gemini_with_validation(self, prompt: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """검증 강화된 Gemini API 호출"""
+    def _build_prompt(self, strategy: IResponseStrategy, user_input: str, context: Dict[str, Any]) -> str:
+        """프롬프트 구성"""
         
-        # 전체 프롬프트 구성
-        full_prompt = f"{self.base_system_prompt}\n\n{prompt}"
+        strategy_prompt = strategy.generate_prompt(user_input, context)
         
-        # Gemini 호출
-        response = await asyncio.to_thread(
-            self.model.generate_content, 
-            full_prompt
-        )
-        
-        # 응답 텍스트 정리
-        response_text = response.text.strip()
-        
-        # JSON 추출 및 파싱
-        parsed_response = self._extract_and_parse_json(response_text)
-        
-        # 응답 검증
-        if not self._validate_response_quality(parsed_response):
-            raise ValueError("응답 품질 검증 실패")
-        
-        return parsed_response
+        return f"{self.base_prompt}\n\n{strategy_prompt}"
     
-    def _extract_and_parse_json(self, response_text: str) -> Dict[str, Any]:
-        """JSON 추출 및 파싱"""
+    async def _call_gemini(self, prompt: str) -> str:
+        """Gemini API 호출"""
         
-        import re
+        def sync_generate():
+            response = self.model.generate_content(prompt)
+            return response.text
         
-        # JSON 블록 찾기
+        # 비동기 처리
+        response_text = await asyncio.to_thread(sync_generate)
+        return response_text.strip()
+    
+    def _validate_and_enhance(self, response: str, strategy: IResponseStrategy, user_input: str) -> Dict[str, Any]:
+        """응답 검증 및 강화"""
+        
+        # JSON 파싱 시도
+        parsed_response = self._extract_json_response(response)
+        
+        if not parsed_response:
+            self.stats["validation_failures"] += 1
+            return self._create_fallback_response(user_input, "parse_error")
+        
+        response_text = parsed_response.get("response", "")
+        
+        # 기본 검증
+        if not response_text or len(response_text) > 80:
+            self.stats["validation_failures"] += 1
+            return self._create_fallback_response(user_input, "validation_error")
+        
+        # 전략별 검증
+        if not strategy.validate_response(response_text):
+            self.stats["validation_failures"] += 1
+            return self._create_fallback_response(user_input, "strategy_validation_error")
+        
+        # 검증 통과
+        return {
+            "response": response_text,
+            "urgency_level": 5,
+            "next_action": "continue",
+            "source": "gemini_optimized"
+        }
+    
+    def _extract_json_response(self, response_text: str) -> Optional[Dict[str, Any]]:
+        """JSON 응답 추출"""
+        
+        # JSON 블록 패턴들
         json_patterns = [
             r'```json\s*(\{.*?\})\s*```',
             r'```\s*(\{.*?\})\s*```',
             r'(\{[^}]*"response"[^}]*\})',
-            r'(\{.*\})'
+            r'(\{.*?"response".*?\})'
         ]
         
         for pattern in json_patterns:
             match = re.search(pattern, response_text, re.DOTALL)
             if match:
-                json_str = match.group(1).strip()
                 try:
-                    return json.loads(json_str)
+                    return json.loads(match.group(1))
                 except json.JSONDecodeError:
                     continue
         
-        # JSON 파싱 실패 시 텍스트에서 응답 추출
-        return self._extract_response_from_text(response_text)
+        # 직접 JSON 파싱 시도
+        try:
+            return json.loads(response_text)
+        except json.JSONDecodeError:
+            pass
+        
+        return None
     
-    def _extract_response_from_text(self, text: str) -> Dict[str, Any]:
-        """텍스트에서 응답 추출 (JSON 실패 시)"""
+    def _create_fallback_response(self, user_input: str, reason: str) -> Dict[str, Any]:
+        """폴백 응답 생성"""
         
-        # 간단한 응답 추출
-        lines = text.split('\n')
-        response_line = ""
+        user_lower = user_input.lower() if user_input else ""
         
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith('#') and not line.startswith('**'):
-                if len(line) <= 80:  # 길이 제한 확인
-                    response_line = line
-                    break
-        
-        if not response_line:
-            response_line = text[:80] + "..." if len(text) > 80 else text
-        
-        # 긴급도 추정
-        urgency = 5
-        if any(word in text.lower() for word in ['긴급', '즉시', '빨리', '당장']):
-            urgency = 8
-        elif any(word in text.lower() for word in ['상담', '확인', '문의']):
-            urgency = 6
+        # 상황별 폴백 응답
+        if any(word in user_lower for word in ["132", "일삼이"]):
+            response = "132번은 대한법률구조공단 무료 법률상담 번호입니다."
+        elif any(word in user_lower for word in ["1811", "일팔일일"]):
+            response = "1811-0041번은 보이스피싱제로 생활비 지원 번호입니다."
+        elif any(word in user_lower for word in ["pass", "패스"]):
+            response = "PASS 앱에서 명의도용방지서비스를 신청할 수 있습니다."
+        elif any(word in user_lower for word in ["설명", "뭐예요", "무엇"]):
+            response = "구체적으로 어떤 부분이 궁금하신지 말씀해 주세요."
+        elif any(word in user_lower for word in ["말고", "다른"]):
+            response = "132번 상담이나 1811-0041번 지원 신청도 가능합니다."
+        else:
+            response = "구체적인 상황을 말씀해 주시면 더 정확한 도움을 드릴 수 있습니다."
         
         return {
-            "response": response_line,
-            "urgency_level": urgency,
-            "next_action": "continue"
-        }
-    
-    def _validate_response_quality(self, response: Dict[str, Any]) -> bool:
-        """응답 품질 검증"""
-        
-        if not response or not isinstance(response, dict):
-            return False
-        
-        response_text = response.get("response", "")
-        
-        # 기본 검증
-        if not response_text or len(response_text.strip()) < self.quality_criteria['min_length']:
-            self.success_metrics['validation_failures'] += 1
-            return False
-        
-        if len(response_text) > self.quality_criteria['max_length']:
-            self.success_metrics['validation_failures'] += 1
-            return False
-        
-        # 금지된 문구 체크
-        for forbidden in self.quality_criteria['forbidden_phrases']:
-            if forbidden in response_text:
-                self.success_metrics['validation_failures'] += 1
-                return False
-        
-        # 실질적 도움 여부 체크
-        helpful_indicators = [
-            "132", "1811", "PASS", "mSAFER", "신고", "상담", 
-            "설정", "차단", "지원", "도움", "방법"
-        ]
-        
-        if not any(indicator in response_text for indicator in helpful_indicators):
-            self.success_metrics['validation_failures'] += 1
-            return False
-        
-        return True
-    
-    def _enhance_response_quality(self, response: Dict[str, Any], user_input: str, situation_type: str) -> Dict[str, Any]:
-        """응답 품질 강화"""
-        
-        enhanced = response.copy()
-        response_text = enhanced.get("response", "")
-        
-        # 상황별 응답 강화
-        if situation_type == "meaningless":
-            if "구체적" not in response_text:
-                response_text = f"구체적으로 어떤 도움이 필요하신지 말씀해 주세요."
-        
-        elif situation_type == "emergency":
-            if "132" not in response_text and "112" not in response_text:
-                response_text = f"긴급하시면 132번으로 즉시 연락하세요."
-        
-        elif situation_type == "explanation":
-            # 설명에 구체적인 정보 포함 확인
-            if not any(info in response_text for info in ["132번", "1811", "PASS", "mSAFER"]):
-                if "132" in user_input:
-                    response_text = "132번은 대한법률구조공단 무료 법률상담 번호입니다."
-                elif "1811" in user_input:
-                    response_text = "1811-0041번은 보이스피싱제로 생활비 지원 번호입니다."
-        
-        # 길이 재조정
-        if len(response_text) > 80:
-            response_text = response_text[:77] + "..."
-        
-        enhanced["response"] = response_text
-        
-        # 긴급도 조정
-        if situation_type == "emergency":
-            enhanced["urgency_level"] = max(enhanced.get("urgency_level", 5), 8)
-        elif situation_type == "meaningless":
-            enhanced["urgency_level"] = 3
-        
-        return enhanced
-    
-    def _situation_based_fallback(self, user_input: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """상황별 폴백 응답"""
-        
-        situation_type = self._classify_situation(user_input, context)
-        
-        fallback_responses = {
-            "meaningless": {
-                "response": "보이스피싱 상담입니다. 구체적으로 어떤 도움이 필요하신지 말씀해 주세요.",
-                "urgency_level": 3,
-                "next_action": "clarification"
-            },
-            "emergency": {
-                "response": "긴급상황이시면 즉시 132번으로 전화하거나 112에 신고하세요.",
-                "urgency_level": 9,
-                "next_action": "immediate_help"
-            },
-            "context_mismatch": {
-                "response": "다른 방법을 원하시는군요. 132번 상담이나 1811-0041번 지원 신청도 가능해요.",
-                "urgency_level": 6,
-                "next_action": "expert_consultation"
-            },
-            "explanation": {
-                "response": "궁금한 내용을 구체적으로 말씀해 주시면 자세히 설명드릴게요.",
-                "urgency_level": 5,
-                "next_action": "clarification"
-            },
-            "dissatisfaction": {
-                "response": "더 자세한 도움은 132번 전문상담사와 직접 통화하시는 게 좋겠어요.",
-                "urgency_level": 6,
-                "next_action": "expert_consultation"
-            },
-            "general": {
-                "response": "132번으로 무료 상담받으시거나 1811-0041번으로 지원 신청하세요.",
-                "urgency_level": 5,
-                "next_action": "expert_consultation"
-            }
-        }
-        
-        return fallback_responses.get(situation_type, fallback_responses["general"])
-    
-    def _enhanced_rule_based_fallback(self, user_input: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """강화된 룰 기반 폴백"""
-        
-        if not user_input:
-            return {
-                "response": "다시 말씀해 주세요.",
-                "urgency_level": 3,
-                "next_action": "clarification"
-            }
-        
-        user_lower = user_input.lower()
-        
-        # 긴급 상황 처리
-        if any(word in user_lower for word in ["돈", "송금", "급해", "사기"]):
-            return {
-                "response": "긴급상황입니다! 즉시 132번으로 신고하고 1811-0041번으로 지원받으세요.",
-                "urgency_level": 9,
-                "next_action": "immediate_help"
-            }
-        
-        # 의미없는 입력 처리
-        meaningless_patterns = ["안먹", "안했", "못했", "아무거나", "몰라"]
-        if any(pattern in user_lower for pattern in meaningless_patterns):
-            return {
-                "response": "보이스피싱 상담센터입니다. 어떤 도움이 필요하신지 구체적으로 말씀해 주세요.",
-                "urgency_level": 3,
-                "next_action": "clarification"
-            }
-        
-        # 설명 요청 처리
-        if any(word in user_lower for word in ["뭐예요", "어떻게", "설명"]):
-            if "132" in user_input:
-                return {
-                    "response": "132번은 대한법률구조공단 무료 법률상담 번호입니다.",
-                    "urgency_level": 5,
-                    "next_action": "expert_consultation"
-                }
-            elif "1811" in user_input:
-                return {
-                    "response": "1811-0041번은 보이스피싱제로 생활비 지원 번호입니다.",
-                    "urgency_level": 5,
-                    "next_action": "expert_consultation"
-                }
-        
-        # 기본 응답
-        return {
-            "response": "132번으로 무료상담 받으시거나 1811-0041번으로 지원 신청하세요.",
+            "response": response,
             "urgency_level": 5,
-            "next_action": "expert_consultation"
-        }
-    
-    def _get_last_ai_response(self) -> str:
-        """마지막 AI 응답 가져오기"""
-        
-        if not self.conversation_history:
-            return ""
-        
-        for record in reversed(self.conversation_history):
-            if record.get('assistant'):
-                return record['assistant']
-        
-        return ""
-    
-    def _update_session_state(self, response: Dict[str, Any], situation_type: str):
-        """세션 상태 업데이트"""
-        
-        self.session_state['total_turns'] += 1
-        self.session_state['urgency_level'] = response.get('urgency_level', 5)
-        
-        # 상황별 만족도 추정
-        if situation_type == "meaningless":
-            self.session_state['user_satisfaction_level'] = max(1, self.session_state['user_satisfaction_level'] - 1)
-        elif situation_type == "dissatisfaction":
-            self.session_state['user_satisfaction_level'] = max(1, self.session_state['user_satisfaction_level'] - 2)
-        elif situation_type == "explanation" and len(response.get('response', '')) > 50:
-            self.session_state['user_satisfaction_level'] = min(10, self.session_state['user_satisfaction_level'] + 1)
-        
-        # 성공률 계산
-        if self.success_metrics['total_requests'] > 0:
-            self.session_state['gemini_success_rate'] = (
-                self.success_metrics['successful_responses'] / 
-                self.success_metrics['total_requests']
-            )
-    
-    def _add_conversation_record(self, user_input: str, response: Dict[str, Any]):
-        """대화 기록 추가"""
-        
-        self.conversation_history.append({
-            'user': user_input,
-            'assistant': response.get('response', ''),
-            'urgency_level': response.get('urgency_level', 5),
-            'timestamp': datetime.now(),
-            'source': 'gemini_improved'
-        })
-        
-        # 최대 10개 기록만 유지
-        if len(self.conversation_history) > 10:
-            self.conversation_history.pop(0)
-    
-    def get_session_status(self) -> Dict[str, Any]:
-        """세션 상태 조회"""
-        
-        return {
-            'is_ai_enabled': self.is_enabled,
-            'total_turns': self.session_state['total_turns'],
-            'urgency_level': self.session_state['urgency_level'],
-            'user_satisfaction_level': self.session_state['user_satisfaction_level'],
-            'conversation_length': len(self.conversation_history),
-            'success_rate': f"{self.session_state['gemini_success_rate'] * 100:.1f}%",
-            'total_requests': self.success_metrics['total_requests'],
-            'successful_responses': self.success_metrics['successful_responses'],
-            'timeout_count': self.success_metrics['timeout_count'],
-            'validation_failures': self.success_metrics['validation_failures']
+            "next_action": "continue",
+            "source": f"fallback_{reason}"
         }
     
     async def test_connection(self) -> bool:
@@ -580,9 +362,9 @@ class ImprovedGeminiAssistant:
             return False
         
         try:
-            test_result = await self.analyze_and_respond(
-                "테스트", 
-                {"urgency_level": 5, "conversation_turns": 0}
+            test_result = await asyncio.wait_for(
+                self.analyze_and_respond("테스트", {"conversation_turns": 0}),
+                timeout=2.0
             )
             
             success = (test_result and 
@@ -590,7 +372,7 @@ class ImprovedGeminiAssistant:
                       test_result.get("response"))
             
             if success:
-                logger.info("✅ 개선된 Gemini 테스트 성공")
+                logger.info("✅ 최적화된 Gemini 테스트 성공")
             else:
                 logger.warning("❌ Gemini 테스트 실패")
             
@@ -599,6 +381,37 @@ class ImprovedGeminiAssistant:
         except Exception as e:
             logger.error(f"Gemini 테스트 실패: {e}")
             return False
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """성능 통계 조회"""
+        
+        total = self.stats["total_requests"]
+        if total == 0:
+            return {**self.stats, "success_rate": "0%"}
+        
+        success_rate = (self.stats["successful_responses"] / total) * 100
+        timeout_rate = (self.stats["timeouts"] / total) * 100
+        validation_failure_rate = (self.stats["validation_failures"] / total) * 100
+        
+        return {
+            **self.stats,
+            "success_rate": f"{success_rate:.1f}%",
+            "timeout_rate": f"{timeout_rate:.1f}%",
+            "validation_failure_rate": f"{validation_failure_rate:.1f}%",
+            "is_enabled": self.is_enabled
+        }
+    
+    def add_strategy(self, name: str, strategy: IResponseStrategy):
+        """새로운 전략 추가 (개방-폐쇄 원칙)"""
+        self.strategies[name] = strategy
+        logger.info(f"✅ 새로운 응답 전략 추가: {name}")
 
+# ============================================================================
 # 전역 인스턴스
-gemini_assistant = ImprovedGeminiAssistant()
+# ============================================================================
+
+# 최적화된 어시스턴트 인스턴스
+gemini_assistant = OptimizedGeminiAssistant()
+
+# 하위 호환성을 위한 별칭
+ImprovedGeminiAssistant = OptimizedGeminiAssistant
