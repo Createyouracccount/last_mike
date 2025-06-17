@@ -474,6 +474,23 @@ class VoiceFriendlyPhishingGraph:
         
         return self.victim_assessment.process_answer(user_input)
     
+        # 평가가 방금 완료되었는지 확인합니다.
+        if self.victim_assessment.is_complete():
+            self.conversation_mode = "consultation" # 상담 모드로 전환
+            
+            # 수집된 답변들을 바탕으로 Gemini에게 요약 및 조치 제안을 요청합니다.
+            assessment_results = self.victim_assessment.responses
+            summary_prompt = f"다음은 사용자의 피해 상황 체크리스트 답변입니다: {assessment_results}. 이 정보를 바탕으로 사용자에게 가장 시급하고 중요한 조치 2가지를 80자 이내로 요약해서 알려주세요."
+            
+            # 상담 전략(consultation_strategy)을 통해 Gemini를 호출합니다.
+            final_summary = await self.consultation_strategy.process_input(summary_prompt)
+            
+            # 기존 평가 완료 메시지 대신, Gemini가 생성한 요약 메시지를 반환합니다.
+            return final_summary
+
+        # 평가가 아직 진행 중이라면 다음 질문을 반환합니다.
+        return response
+    
     async def _handle_consultation_mode(self, user_input: str) -> str:
         """상담 모드 처리"""
         context = {

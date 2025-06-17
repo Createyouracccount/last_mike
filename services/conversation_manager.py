@@ -98,36 +98,27 @@ class VoiceFriendlyConversationManager:
         # STT 컴포넌트
         self.stt_client = None
         self.stt_queue = queue.Queue(maxsize=5)
-        
+        self.stt_thread: Optional[threading.Thread] = None
+
         # 상태 관리 (단일 책임)
         self.state = ConversationState.IDLE
         self.is_running = False
         self.is_processing = False
-        
+        self.initialization_complete = False # 초기화 완료 상태 추가
+        self.error_count = 0 # 오류 카운트 추가
+
         # 콜백 관리
-        self.callbacks: Optional[IConversationCallbacks] = None
+        self.callbacks: Dict[str, Optional[Callable]] = {}
         
-        # 안전장치들
-        self.safety_config = {
-            "max_errors": 10,
-            "error_cooldown": 1.0,
-            "max_consecutive_errors": 5,
-            "pipeline_timeout": 10.0
-        }
-        
-        self.safety_state = {
-            "error_count": 0,
-            "consecutive_errors": 0,
-            "last_error_time": None
-        }
-        
-        # 성능 통계
-        self.performance_stats = {
-            "conversation_start_time": None,
-            "total_pipeline_runs": 0,
-            "successful_runs": 0,
-            "error_recoveries": 0,
-            "avg_response_time": 0.0
+        # (중요) 성능 통계 딕셔너리 - get_conversation_status 와 호환되도록 수정
+        self.stats = {
+            'conversation_start_time': None,
+            'initialization_attempts': 0,
+            'total_pipeline_runs': 0,
+            'avg_pipeline_time': 0.0,
+            'stt_errors': 0,
+            'ai_errors': 0,
+            'tts_errors': 0,
         }
         
         logger.info("✅ 안전한 대화 매니저 초기화 완료")
@@ -145,6 +136,10 @@ class VoiceFriendlyConversationManager:
         """콜백 주입"""
         self.callbacks = callbacks
         logger.info("📞 콜백 설정 완료")
+
+    # def stats(self) -> Dict[str, Any]:
+    #     """현재 통계 정보를 반환합니다."""
+    #     return self.statistics
     
     def set_callbacks_legacy(self, 
                            on_user_speech: Optional[Callable] = None,

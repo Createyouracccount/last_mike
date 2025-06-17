@@ -81,7 +81,7 @@ class VoiceFriendlyPhishingGraph:
     def _check_gemini_available(self) -> bool:
         """Gemini 사용 가능 여부 확인 - 개선된 버전"""
         try:
-            from services.gemini_assistant import gemini_assistant
+            from services.gemini_assistant3 import gemini_assistant
             is_available = gemini_assistant.is_enabled
             
             if self.debug:
@@ -516,7 +516,7 @@ class VoiceFriendlyPhishingGraph:
             if self.debug:
                 print(f"🤖 Gemini 처리 중... 이유: {decision['reasons']}")
             
-            from services.gemini_assistant import gemini_assistant
+            from services.gemini_assistant3 import gemini_assistant
             
             # 현재 상황 정보 수집
             urgency_level = state.get("urgency_level", 5)

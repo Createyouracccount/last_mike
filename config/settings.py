@@ -75,7 +75,7 @@ class Settings:
     SKIP_FIRST_INTERACTION = True
     
     # STT 품질 설정
-    STT_MIN_TEXT_LENGTH = 3             # 최소 3글자 이상만 처리
+    STT_MIN_TEXT_LENGTH = 2             # 최소 2글자 이상만 처리
     STT_CONFIDENCE_THRESHOLD = 0.7      # 신뢰도 70% 이상만 처리
     
     # 응급 상황 설정
