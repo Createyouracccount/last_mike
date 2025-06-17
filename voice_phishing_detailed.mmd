@@ -1,0 +1,69 @@
+graph TD
+    START([🚀 상담 시작<br/>Session Start]) --> GREETING[👋 인사 노드<br/>Greeting Node<br/><br/>• 초기 인사말<br/>• 상담 접수<br/>• 질문 인덱스 초기화]
+    
+    GREETING --> INITIAL_ASSESSMENT[🔍 초기 평가 노드<br/>Initial Assessment<br/><br/>• 스마트 긴급도 판단<br/>• 키워드 분석<br/>• 맥락 기반 점수 계산]
+    
+    INITIAL_ASSESSMENT --> COLLECT_INFO[📝 정보 수집 노드<br/>Collect Info<br/><br/>• 구조화된 질문 진행<br/>• 답변 파싱 및 저장<br/>• 확인 메시지 생성]
+    
+    COLLECT_INFO --> COLLECT_DECISION{질문 완료?<br/>All Questions Done?}
+    
+    COLLECT_DECISION -->|미완료<br/>More Questions| COLLECT_INFO
+    COLLECT_DECISION -->|완료 & 긴급도 ≥ 8<br/>Done & High Urgency| EMERGENCY_ACTION[🚨 긴급 조치 노드<br/>Emergency Action<br/><br/>• 즉시 조치사항 안내<br/>• 112/1332 신고 안내<br/>• 지급정지 신청 가이드]
+    COLLECT_DECISION -->|완료 & 일반<br/>Done & Normal| COMPLETE[✅ 완료 노드<br/>Complete<br/><br/>• 상담 요약 생성<br/>• 3일 규칙 안내<br/>• 세션 정리]
+    
+    EMERGENCY_ACTION --> COMPLETE
+    COMPLETE --> END([🏁 상담 종료<br/>Session End])
+    
+    %% 스타일링
+    classDef startEnd fill:#e8f5e8,stroke:#2e7d32,stroke-width:3px,color:#000
+    classDef process fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#000
+    classDef decision fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#000
+    classDef emergency fill:#ffebee,stroke:#c62828,stroke-width:3px,color:#000
+    classDef complete fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#000
+    
+    class START,END startEnd
+    class GREETING,INITIAL_ASSESSMENT,COLLECT_INFO process
+    class COLLECT_DECISION decision
+    class EMERGENCY_ACTION emergency
+    class COMPLETE complete
+    
+    %% 질문 플로우 상세
+    subgraph QUESTIONS [" 📋 구조화된 질문 플로우 "]
+        Q1[❓ 피해자 본인인가?<br/>Victim Confirmation]
+        Q2[💰 송금 금액은?<br/>Loss Amount]
+        Q3[⏰ 송금 시간은?<br/>Time Context]
+        Q4[🏦 지급정지 신청했나?<br/>Payment Stop]
+        Q5[🚔 경찰 신고했나?<br/>Police Report]
+        
+        Q1 --> Q2 --> Q3 --> Q4 --> Q5
+    end
+    
+    COLLECT_INFO -.->|순차 진행| QUESTIONS
+    
+    %% 긴급도 판정 상세
+    subgraph URGENCY [" ⚡ 스마트 긴급도 판정 "]
+        U1[🔍 패턴 매칭<br/>Pattern Matching]
+        U2[📊 키워드 점수<br/>Keyword Scoring]
+        U3[🧠 맥락 분석<br/>Context Analysis]
+        U4[📈 최종 점수<br/>Final Score 1-10]
+        
+        U1 --> U2 --> U3 --> U4
+    end
+    
+    INITIAL_ASSESSMENT -.->|알고리즘| URGENCY
+    
+    %% 응급 조치 상세
+    subgraph EMERGENCY_DETAILS [" 🚨 긴급 조치사항 "]
+        E1[📞 112/1332 신고]
+        E2[🏦 지급정지 신청]
+        E3[📱 휴대폰 보안]
+        E4[⏰ 3일 규칙 안내]
+        
+        E1 --> E2 --> E3 --> E4
+    end
+    
+    EMERGENCY_ACTION -.->|안내 내용| EMERGENCY_DETAILS
+    
+    style QUESTIONS fill:#f9f9f9,stroke:#666,stroke-dasharray: 5 5
+    style URGENCY fill:#f0f4ff,stroke:#666,stroke-dasharray: 5 5
+    style EMERGENCY_DETAILS fill:#fff0f0,stroke:#666,stroke-dasharray: 5 5

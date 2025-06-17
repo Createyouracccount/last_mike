@@ -1,0 +1,25 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	greeting(greeting)
+	initial_assessment(initial_assessment)
+	collect_info(collect_info)
+	emergency_action(emergency_action)
+	complete(complete)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> greeting;
+	collect_info -.-> complete;
+	collect_info -.-> emergency_action;
+	emergency_action -.-> complete;
+	greeting -.-> initial_assessment;
+	initial_assessment -.-> collect_info;
+	initial_assessment -.-> complete;
+	complete --> __end__;
+	collect_info -.-> collect_info;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

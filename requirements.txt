@@ -1,0 +1,33 @@
+# 기본 패키지들
+asyncio
+configparser
+logging
+pathlib
+
+# 오디오 처리
+pyaudio>=0.2.11
+pydub>=0.25.1
+
+# gRPC 통신 (ReturnZero STT)
+grpc>=1.50.0
+grpcio>=1.50.0
+grpcio-tools>=1.50.0
+protobuf>=4.21.0
+
+# HTTP 요청
+requests>=2.28.0
+
+# TTS (ElevenLabs)
+elevenlabs>=0.2.26
+
+# LangGraph 및 관련
+langgraph>=0.0.30
+langchain>=0.1.0
+langchain-core>=0.1.0
+
+# 환경 변수 관리
+python-dotenv>=1.0.0
+
+# 기타 유틸리티
+python-dateutil>=2.8.0
+typing-extensions>=4.5.0

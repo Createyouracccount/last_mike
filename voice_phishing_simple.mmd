@@ -1,0 +1,15 @@
+graph LR
+    A[🚀 시작] --> B[👋 인사]
+    B --> C[🔍 평가]
+    C --> D[📝 정보수집]
+    D --> E{완료?}
+    E -->|No| D
+    E -->|Yes + 긴급| F[🚨 긴급조치]
+    E -->|Yes + 일반| G[✅ 완료]
+    F --> G
+    G --> H[🏁 종료]
+    
+    style A fill:#e8f5e8
+    style H fill:#e8f5e8
+    style F fill:#ffebee
+    style G fill:#f3e5f5
