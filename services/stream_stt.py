@@ -5,6 +5,7 @@ import queue
 import sys
 import time
 from pathlib import Path
+import threading
 
 import grpc
 import pyaudio
@@ -32,7 +33,7 @@ VOICE_PHISHING_KEYWORDS = [
     "환급", "지원금", "신청", "피해신고", "상담"
 ]
 
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 6000
 
 # 프로토콜 버퍼 import 수정
 try:
@@ -62,9 +63,10 @@ SAMPLE_RATE = 16000
 FORMAT = pyaudio.paInt16
 CHANNELS = 1 if sys.platform == "darwin" else 2
 RECORD_SECONDS = 10
-CHUNK = int(SAMPLE_RATE / 10)  # 100ms chunk
+# CHUNK = int(SAMPLE_RATE / 10)  # 100ms chunk
+CHUNK = 400
 ENCODING = pb.DecoderConfig.AudioEncoding.LINEAR16
-
+# ENCODING = pb.DecoderConfig.AudioEncoding.OGG_OPUS
 
 def get_config(keywords=None):
     """
@@ -253,3 +255,191 @@ class RTZROpenAPIClient:
     def __del__(self):
         if hasattr(self, 'stream'):
             self.stream.terminate()
+
+    def prepare_audio_for_streaming(self, audio_file_data: bytes) -> bytes:
+        """오디오를 스트리밍에 적합한 형태로 변환"""
+        
+        try:
+            from pydub import AudioSegment
+            from io import BytesIO
+            
+            print(f"🔄 [오디오 변환] 시작: {len(audio_file_data)} bytes")
+            
+            # 메모리에서 오디오 로드
+            audio_io = BytesIO(audio_file_data)
+            
+            # 포맷 자동 감지하여 로드
+            try:
+                audio = AudioSegment.from_file(audio_io, format="webm")
+            except:
+                try:
+                    audio_io.seek(0)
+                    audio = AudioSegment.from_file(audio_io, format="mp4")
+                except:
+                    audio_io.seek(0)
+                    audio = AudioSegment.from_file(audio_io)
+            
+            # RTZR STT 요구사항에 맞춰 변환
+            # "Audio file must be a 16-bit signed little-endian encoded with a sample rate of 16000"
+            audio = audio.set_frame_rate(SAMPLE_RATE)  # 16kHz
+            audio = audio.set_channels(1)              # Mono
+            audio = audio.set_sample_width(2)          # 16bit
+            
+            # Raw PCM 데이터 반환
+            pcm_data = audio.raw_data
+            
+            print(f"🔄 [오디오 변환] {len(audio_file_data)} bytes → {len(pcm_data)} bytes PCM")
+            print(f"🎵 [오디오 변환] {audio.frame_rate}Hz, {audio.channels}ch, {audio.sample_width*8}bit")
+            
+            return pcm_data
+            
+        except Exception as e:
+            print(f"❌ [오디오 변환] 실패: {e}")
+            return audio_file_data  # 원본 데이터 반환
+    
+    def transcribe_file_streaming(self, pcm_data: bytes) -> str:
+        """파일 데이터를 실시간 스트리밍으로 처리"""
+        
+        import threading
+        import queue
+        import time
+        
+        print(f"🚀 [파일 스트리밍] 시작: {len(pcm_data)} bytes PCM")
+        
+        # 결과 수집
+        result_queue = queue.Queue()
+        collected_texts = []
+        processing_complete = threading.Event()
+        
+        def transcript_handler(start_time, transcript, is_final=False):
+            """실시간 결과 수집 (수정된 버전)"""
+            if transcript and transcript.alternatives:
+                text = transcript.alternatives[0].text.strip()
+                if text and len(text) > 1:
+                    print(f"📝 [파일 스트리밍] 수신: '{text}' (최종: {is_final})")
+                    
+                    # 🔥 핵심 수정: 최종 결과와 중간 결과 모두 수집
+                    if is_final:
+                        collected_texts.append(text)
+                        result_queue.put(('final', text))
+                        print(f"✅ [파일 스트리밍] 최종 텍스트 수집: '{text}'")
+                    else:
+                        # 중간 결과도 백업으로 저장 (최종 결과가 없을 경우 사용)
+                        if text not in collected_texts:  # 중복 방지
+                            result_queue.put(('interim', text))
+                            print(f"🔄 [파일 스트리밍] 중간 텍스트 백업: '{text}'")
+        
+        # 기존 콜백을 우리 콜백으로 완전히 교체
+        original_callback = getattr(self, 'print_transcript', None)
+        # 🔥 핵심: 콜백을 직접 호출하도록 수정
+        def response_processor(resp_iter):
+            """응답 처리기"""
+            for resp in resp_iter:
+                if resp.error:
+                    print(f"❌ [gRPC 파일] gRPC 오류: {resp.error}")
+                    break
+                
+                # 각 결과 처리
+                for res in resp.results:
+                    # 우리 transcript_handler 직접 호출
+                    transcript_handler(0, res, is_final=res.is_final)
+            
+            # 처리 완료 신호
+            processing_complete.set()
+
+        try:
+            # gRPC 스트리밍 실행 (수정된 버전)
+            success = self._execute_file_streaming_fixed(pcm_data, response_processor)
+            
+            if success:
+                # 처리 완료 대기 (최대 10초)
+                if processing_complete.wait(timeout=10.0):
+                    if collected_texts:
+                        final_result = " ".join(collected_texts)
+                        print(f"✅ [파일 스트리밍] 최종 결과: '{final_result}'")
+                        return final_result
+                    else:
+                        # 최종 결과가 없으면 중간 결과라도 사용
+                        interim_texts = []
+                        while not result_queue.empty():
+                            try:
+                                msg_type, text = result_queue.get_nowait()
+                                if text not in interim_texts:
+                                    interim_texts.append(text)
+                            except queue.Empty:
+                                break
+                        
+                        if interim_texts:
+                            fallback_result = " ".join(interim_texts)
+                            print(f"🔄 [파일 스트리밍] 중간 결과 사용: '{fallback_result}'")
+                            return fallback_result
+                        else:
+                            print("⚠️ [파일 스트리밍] 텍스트 결과 없음")
+                else:
+                    print("⏰ [파일 스트리밍] 처리 시간 초과")
+            
+            return ""
+            
+        except Exception as e:
+            print(f"❌ [파일 스트리밍] 전체 오류: {e}")
+            return ""
+        finally:
+            # 콜백 복원
+            if original_callback:
+                self.print_transcript = original_callback
+    
+    def _execute_file_streaming_fixed(self, pcm_data: bytes, response_processor) -> bool:
+        """수정된 gRPC 파일 스트리밍 실행"""
+        
+        try:
+            print(f"📡 [gRPC 파일] PCM 데이터: {len(pcm_data)} bytes")
+            
+            # gRPC 연결
+            base = GRPC_SERVER_URL
+            with grpc.secure_channel(base, credentials=grpc.ssl_channel_credentials()) as channel:
+                stub = pb_grpc.OnlineDecoderStub(channel)
+                cred = grpc.access_token_call_credentials(self.token)
+                
+                def file_req_iterator():
+                    """파일 기반 요청 이터레이터"""
+                    
+                    # 1. 설정 전송
+                    config = get_config(VOICE_PHISHING_KEYWORDS)
+                    yield pb.DecoderRequest(streaming_config=config)
+                    print("📋 [gRPC 파일] 설정 전송 완료")
+                    
+                    # 2. PCM 데이터를 청크로 분할 전송
+                    chunk_duration_ms = 20  # 100ms 청크
+                    bytes_per_sample = 2    # 16bit
+                    chunk_size = int((SAMPLE_RATE * chunk_duration_ms / 1000) * bytes_per_sample)
+                    
+                    total_chunks = len(pcm_data) // chunk_size + (1 if len(pcm_data) % chunk_size else 0)
+                    print(f"📡 [gRPC 파일] {total_chunks}개 청크로 실시간 전송 (청크당 {chunk_duration_ms}ms)")
+                    
+                    for i, start in enumerate(range(0, len(pcm_data), chunk_size)):
+                        chunk = pcm_data[start:start + chunk_size]
+                        if chunk:
+                            yield pb.DecoderRequest(audio_content=chunk)
+                            
+                            # 실시간 시뮬레이션
+                            time.sleep(chunk_duration_ms / 1000.0)
+                            
+                            # 진행 상황 로그
+                            if (i + 1) % 10 == 0 or i == total_chunks - 1:
+                                progress = (i + 1) / total_chunks * 100
+                                print(f"📡 [gRPC 파일] 진행률: {progress:.1f}% ({i+1}/{total_chunks})")
+                
+                # 3. gRPC 스트리밍 실행
+                print("🔄 [gRPC 파일] 스트리밍 시작")
+                
+                req_iter = file_req_iterator()
+                resp_iter = stub.Decode(req_iter, credentials=cred)
+                
+                # 4. 응답 처리 (수정된 방식)
+                response_processor(resp_iter)
+                
+                return True
+                
+        except Exception as e:
+            print(f"❌ [gRPC 파일] 실행 오류: {e}")
+            return False
