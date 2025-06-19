@@ -390,21 +390,21 @@ class VoiceFriendlyPhishingGraph:
     def __init__(self, debug: bool = True):
         self.debug = debug
         
-        # 의존성 주입 (의존 역전 원칙)
+        # 의존성 주입
         self.victim_assessment = VictimInfoAssessment()
         self.consultation_strategy = PersonalizedConsultationStrategy()
         self.emergency_handler = EmergencyHandler()
         
-        # 그래프 빌드
-        self.graph = self._build_voice_friendly_graph()
+        # 🔥 핵심 수정: 그래프를 올바르게 빌드
+        self.graph = self._build_corrected_voice_friendly_graph()
         
         # 상태 관리
         self.current_state = None
         self.session_id = None
-        self.conversation_mode = "normal"  # "assessment" or "consultation"
+        self.conversation_mode = "normal"
         
         if debug:
-            print("✅ SOLID 원칙 적용 음성 친화적 상담 그래프 초기화 완료")
+            print("✅ 수정된 SOLID 원칙 적용 음성 친화적 상담 그래프 초기화 완료")
 
     # ========================================================================
     # 메인 인터페이스 (conversation_manager용)
@@ -507,28 +507,72 @@ class VoiceFriendlyPhishingGraph:
             response = response[:77] + "..."
         
         return response
+    
+    async def continue_conversation(self, state: VictimRecoveryState, user_input: str) -> VictimRecoveryState:
+        """🔥 수정된 대화 계속 - 올바른 노드 실행"""
+        
+        if not user_input.strip():
+            state["messages"].append({
+                "role": "assistant",
+                "content": "다시 말씀해 주세요.",
+                "timestamp": datetime.now()
+            })
+            return state
+        
+        # 사용자 메시지 추가
+        state["messages"].append({
+            "role": "user",
+            "content": user_input,
+            "timestamp": datetime.now()
+        })
+        
+        try:
+            # 🔥 핵심: LangGraph 실행
+            if self.debug:
+                print(f"🚀 LangGraph 노드 실행 시작 - 현재 단계: {state.get('current_step')}")
+            
+            # LangGraph invoke로 노드 실행
+            updated_state = self.graph.invoke(state)
+            
+            if self.debug:
+                new_step = updated_state.get('current_step', 'unknown')
+                print(f"✅ LangGraph 노드 실행 완료 - 새로운 단계: {new_step}")
+            
+            return updated_state
+            
+        except Exception as e:
+            if self.debug:
+                print(f"❌ LangGraph 노드 실행 실패: {e}")
+            
+            # 폴백 처리
+            state["messages"].append({
+                "role": "assistant",
+                "content": "일시적 문제가 발생했습니다. 132번으로 연락주세요.",
+                "timestamp": datetime.now()
+            })
+            
+            return state
 
     # ========================================================================
     # 그래프 구성 (기존 인터페이스 호환성 유지)
     # ========================================================================
     
-    def _build_voice_friendly_graph(self) -> StateGraph:
-        """음성 친화적 그래프 구성"""
+    def _build_corrected_voice_friendly_graph(self) -> StateGraph:
+        """🔥 수정된 음성 친화적 그래프 구성"""
         workflow = StateGraph(VictimRecoveryState)
         
         # 노드들 추가
-        # workflow.add_node(START, "greeting")
-        workflow.add_node("greeting", self._greeting_node)
-        workflow.add_node("mode_selection", self._mode_selection_node)
-        workflow.add_node("assessment", self._assessment_node)
-        workflow.add_node("consultation", self._consultation_node)
+        workflow.add_node("greeting", self._corrected_greeting_node)
+        workflow.add_node("mode_selection", self._corrected_mode_selection_node)
+        workflow.add_node("assessment", self._corrected_assessment_node)
+        workflow.add_node("consultation", self._corrected_consultation_node)
         workflow.add_node("emergency", self._emergency_node)
         workflow.add_node("complete", self._complete_node)
-        # workflow.add_node("complete", END)
         
-        # 엣지 구성
+        # 🔥 수정된 엣지 구성
         workflow.add_edge(START, "greeting")
         
+        # greeting에서 분기
         workflow.add_conditional_edges(
             "greeting",
             self._route_after_greeting,
@@ -538,31 +582,37 @@ class VoiceFriendlyPhishingGraph:
             }
         )
         
+        # mode_selection에서 분기
         workflow.add_conditional_edges(
             "mode_selection",
             self._route_after_mode,
             {
                 "assessment": "assessment",
-                "consultation": "consultation"
+                "consultation": "consultation",
+                "emergency": "emergency"  # 응급상황 추가
             }
         )
         
+        # assessment에서 분기
         workflow.add_conditional_edges(
             "assessment",
             self._route_after_assessment,
             {
-                "assessment": "assessment",
-                "consultation": "consultation",
-                "complete": "complete"
+                "assessment": "assessment",      # 평가 계속
+                "consultation": "consultation",  # 평가 완료 후 상담
+                "complete": "complete",         # 완료
+                "emergency": "emergency"        # 응급상황
             }
         )
         
+        # consultation에서 분기
         workflow.add_conditional_edges(
             "consultation",
             self._route_after_consultation,
             {
-                "consultation": "consultation",
-                "complete": "complete"
+                "consultation": "consultation",  # 상담 계속
+                "complete": "complete",         # 완료
+                "emergency": "emergency"        # 응급상황
             }
         )
         
@@ -575,9 +625,16 @@ class VoiceFriendlyPhishingGraph:
     # 노드 구현
     # ========================================================================
     
-    def _greeting_node(self, state: VictimRecoveryState) -> VictimRecoveryState:
-        """인사 노드"""
-        greeting = self._get_mode_selection_message()
+    def _corrected_greeting_node(self, state: VictimRecoveryState) -> VictimRecoveryState:
+        """🔥 수정된 인사 노드 - 모드 선택 포함"""
+        
+        # 모드 선택 메시지 생성
+        greeting = """안녕하세요. 보이스피싱 상담센터입니다.
+
+1번: 피해 상황 체크리스트 (단계별 확인)
+2번: 맞춤형 상담 (상황에 맞는 조치)
+
+1번 또는 2번이라고 말씀해주세요."""
         
         state["messages"].append({
             "role": "assistant",
@@ -586,21 +643,36 @@ class VoiceFriendlyPhishingGraph:
         })
         
         state["current_step"] = "greeting_complete"
+        state["conversation_turns"] = state.get("conversation_turns", 0) + 1
+        
+        if self.debug:
+            print(f"🎬 인사 노드 실행: {state['current_step']}")
+        
         return state
     
-    def _mode_selection_node(self, state: VictimRecoveryState) -> VictimRecoveryState:
-        """모드 선택 노드"""
-        # 모드 선택 로직은 process_user_input에서 처리
-        return state
-    
-    def _assessment_node(self, state: VictimRecoveryState) -> VictimRecoveryState:
-        """평가 노드"""
+    def _corrected_mode_selection_node(self, state: VictimRecoveryState) -> VictimRecoveryState:
+        """🔥 수정된 모드 선택 노드"""
+        
         last_input = self._get_last_user_message(state)
         
-        if last_input:
-            response = self.victim_assessment.process_answer(last_input)
+        if not last_input:
+            # 입력이 없으면 다시 안내
+            response = "1번 또는 2번을 선택해주세요."
         else:
-            response = self.victim_assessment.get_next_question()
+            # 모드 감지
+            mode = self._detect_mode_selection(last_input)
+            
+            if mode == "assessment":
+                self.conversation_mode = "assessment"
+                response = "📋 피해 상황을 체계적으로 확인하겠습니다."
+                state["current_step"] = "mode_selected_assessment"
+            elif mode == "consultation":
+                self.conversation_mode = "consultation"
+                response = "💬 맞춤형 상담을 시작하겠습니다."
+                state["current_step"] = "mode_selected_consultation"
+            else:
+                response = "1번 또는 2번 중에서 선택해주세요."
+                state["current_step"] = "mode_selection_retry"
         
         state["messages"].append({
             "role": "assistant",
@@ -608,22 +680,120 @@ class VoiceFriendlyPhishingGraph:
             "timestamp": datetime.now()
         })
         
-        state["current_step"] = "assessment"
+        state["conversation_turns"] = state.get("conversation_turns", 0) + 1
+        
+        if self.debug:
+            print(f"🎯 모드 선택: {self.conversation_mode}")
+        
         return state
     
-    def _consultation_node(self, state: VictimRecoveryState) -> VictimRecoveryState:
-        """상담 노드"""
+    def _corrected_assessment_node(self, state: VictimRecoveryState) -> VictimRecoveryState:
+        """🔥 수정된 평가 노드 - Gemini 연동 가능"""
+        
+        last_input = self._get_last_user_message(state)
+        
+        # 🔥 핵심: 평가 모드에서도 복잡한 질문은 Gemini 활용
+        if last_input and self._is_complex_question(last_input):
+            # 복잡한 질문은 상담 전략으로 처리
+            try:
+                context = {
+                    "conversation_turns": state.get("conversation_turns", 0),
+                    "current_mode": "assessment"
+                }
+                
+                # 🔥 비동기 호출을 동기로 처리 (노드 내에서)
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # 이미 이벤트 루프가 실행 중인 경우
+                        response = self.consultation_strategy._get_rule_based_response(last_input)
+                    else:
+                        response = loop.run_until_complete(
+                            self.consultation_strategy.process_input(last_input, context)
+                        )
+                except RuntimeError:
+                    # 새로운 이벤트 루프 생성
+                    response = asyncio.run(
+                        self.consultation_strategy.process_input(last_input, context)
+                    )
+                
+                if self.debug:
+                    print(f"🧠 평가 모드에서 Gemini 활용: {response}")
+                    
+            except Exception as e:
+                if self.debug:
+                    print(f"⚠️ 평가 모드 Gemini 실패: {e}")
+                response = self.victim_assessment.process_answer(last_input)
+        else:
+            # 일반적인 평가 처리
+            if last_input:
+                response = self.victim_assessment.process_answer(last_input)
+            else:
+                response = self.victim_assessment.get_next_question()
+        
+        state["messages"].append({
+            "role": "assistant",
+            "content": response,
+            "timestamp": datetime.now()
+        })
+        
+        # 평가 완료 확인
+        if self.victim_assessment.is_complete():
+            state["current_step"] = "assessment_complete"
+        else:
+            state["current_step"] = "assessment_in_progress"
+        
+        state["conversation_turns"] = state.get("conversation_turns", 0) + 1
+        
+        if self.debug:
+            print(f"📋 평가 노드: {state['current_step']}")
+        
+        return state
+    
+    def _corrected_consultation_node(self, state: VictimRecoveryState) -> VictimRecoveryState:
+        """🔥 수정된 상담 노드 - 완전한 Gemini 연동"""
+        
         last_input = self._get_last_user_message(state)
         
         if last_input:
-            # 비동기 처리를 위한 임시 처리
-            urgency = self.emergency_handler.detect_emergency(last_input)
-            
-            if urgency >= 8:
-                response = self.emergency_handler.get_emergency_response(urgency)
-            else:
-                # 간단한 룰 기반 응답
-                response = self._get_simple_consultation_response(last_input)
+            try:
+                # 🔥 핵심: 상담 전략으로 완전한 처리
+                context = {
+                    "conversation_turns": state.get("conversation_turns", 0),
+                    "urgency_level": state.get("urgency_level", 5),
+                    "current_mode": "consultation"
+                }
+                
+                # 🔥 비동기 호출 처리
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # 동기 버전 사용
+                        response = self._sync_consultation_processing(last_input, context)
+                    else:
+                        response = loop.run_until_complete(
+                            self.consultation_strategy.process_input(last_input, context)
+                        )
+                except RuntimeError:
+                    response = asyncio.run(
+                        self.consultation_strategy.process_input(last_input, context)
+                    )
+                
+                if self.debug:
+                    print(f"💬 상담 노드 Gemini 처리: {response}")
+                    
+            except Exception as e:
+                if self.debug:
+                    print(f"⚠️ 상담 노드 처리 실패: {e}")
+                
+                # 폴백: 응급 상황 처리
+                urgency = self.emergency_handler.detect_emergency(last_input)
+                if urgency >= 8:
+                    response = self.emergency_handler.get_emergency_response(urgency)
+                else:
+                    response = "상황을 좀 더 구체적으로 말씀해 주시면 더 정확한 도움을 드릴 수 있습니다."
         else:
             response = "어떤 도움이 필요하신지 말씀해 주세요."
         
@@ -633,75 +803,130 @@ class VoiceFriendlyPhishingGraph:
             "timestamp": datetime.now()
         })
         
-        state["current_step"] = "consultation"
+        state["current_step"] = "consultation_in_progress"
+        state["conversation_turns"] = state.get("conversation_turns", 0) + 1
+        
+        # 완료 조건 확인
+        if self.consultation_strategy.is_complete():
+            state["current_step"] = "consultation_complete"
+        
+        if self.debug:
+            print(f"💬 상담 노드: {state['current_step']}")
+        
         return state
     
-    def _emergency_node(self, state: VictimRecoveryState) -> VictimRecoveryState:
-        """응급 노드"""
-        last_input = self._get_last_user_message(state)
-        urgency = self.emergency_handler.detect_emergency(last_input)
-        response = self.emergency_handler.get_emergency_response(urgency)
-        
-        state["messages"].append({
-            "role": "assistant",
-            "content": response,
-            "timestamp": datetime.now()
-        })
-        
-        state["current_step"] = "emergency_handled"
-        return state
-    
-    def _complete_node(self, state: VictimRecoveryState) -> VictimRecoveryState:
-        """완료 노드"""
-        response = "상담이 완료되었습니다. 추가 도움이 필요하시면 132번으로 연락하세요."
-        
-        state["messages"].append({
-            "role": "assistant",
-            "content": response,
-            "timestamp": datetime.now()
-        })
-        
-        state["current_step"] = "consultation_complete"
-        return state
 
+    def _sync_consultation_processing(self, user_input: str, context: Dict[str, Any]) -> str:
+        """동기식 상담 처리 (노드 내 사용)"""
+        
+        # 하이브리드 엔진 판단
+        decision = self.consultation_strategy.decision_engine.should_use_gemini(user_input, context)
+        
+        if decision.get("use_gemini"):
+            # Gemini를 사용해야 하지만 동기 환경에서는 룰 기반으로 폴백
+            if self.debug:
+                print("🔄 비동기 Gemini → 동기 룰 기반 폴백")
+            return self.consultation_strategy._get_rule_based_response(user_input)
+        else:
+            # 룰 기반 처리
+            return self.consultation_strategy._get_rule_based_response(user_input)
+
+    def _is_complex_question(self, user_input: str) -> bool:
+        """복잡한 질문 여부 판단"""
+        
+        complex_indicators = [
+            "설명", "뭐예요", "어떻게", "왜", "자세히", 
+            "말고", "다른", "추가", "이해", "헷갈"
+        ]
+        
+        user_lower = user_input.lower()
+        return any(indicator in user_lower for indicator in complex_indicators)
     # ========================================================================
     # 라우팅 함수들
     # ========================================================================
     
     def _route_after_greeting(self, state: VictimRecoveryState) -> Literal["mode_selection", "emergency"]:
-        last_input = self._get_last_user_message(state)
-        urgency = self.emergency_handler.detect_emergency(last_input)
+        """인사 후 라우팅"""
         
-        if urgency >= 9:
-            return "emergency"
+        last_input = self._get_last_user_message(state)
+        
+        # 응급 상황 우선 확인
+        if last_input:
+            urgency = self.emergency_handler.detect_emergency(last_input)
+            if urgency >= 9:
+                return "emergency"
+        
         return "mode_selection"
     
-    def _route_after_mode(self, state: VictimRecoveryState) -> Literal["assessment", "consultation"]:
-        last_input = self._get_last_user_message(state)
-        mode = self._detect_mode_selection(last_input)
+    def _route_after_mode(self, state: VictimRecoveryState) -> Literal["assessment", "consultation", "emergency"]:
+        """모드 선택 후 라우팅"""
         
-        if mode == "assessment":
+        current_step = state.get("current_step", "")
+        last_input = self._get_last_user_message(state)
+        
+        # 응급 상황 확인
+        if last_input:
+            urgency = self.emergency_handler.detect_emergency(last_input)
+            if urgency >= 9:
+                return "emergency"
+        
+        # 모드에 따른 라우팅
+        if current_step == "mode_selected_assessment":
             return "assessment"
-        return "consultation"
+        elif current_step == "mode_selected_consultation":
+            return "consultation"
+        else:
+            # 재시도 필요
+            return "mode_selection"
     
-    def _route_after_assessment(self, state: VictimRecoveryState) -> Literal["assessment", "consultation", "complete"]:
-        if self.victim_assessment.is_complete():
+    def _route_after_assessment(self, state: VictimRecoveryState) -> Literal["assessment", "consultation", "complete", "emergency"]:
+        """평가 후 라우팅"""
+        
+        last_input = self._get_last_user_message(state)
+        
+        # 응급 상황 확인
+        if last_input:
+            urgency = self.emergency_handler.detect_emergency(last_input)
+            if urgency >= 9:
+                return "emergency"
+        
+        current_step = state.get("current_step", "")
+        turns = state.get("conversation_turns", 0)
+        
+        # 평가 완료 확인
+        if current_step == "assessment_complete" or self.victim_assessment.is_complete():
+            # 평가 완료 후 상담 모드로 전환
+            self.conversation_mode = "consultation"
             return "consultation"
         
-        turns = state.get("conversation_turns", 0)
-        if turns >= 12:
+        # 최대 턴 수 확인
+        if turns >= 15:
             return "complete"
         
+        # 평가 계속
         return "assessment"
     
-    def _route_after_consultation(self, state: VictimRecoveryState) -> Literal["consultation", "complete"]:
-        if self.consultation_strategy.is_complete():
-            return "complete"
+    def _route_after_consultation(self, state: VictimRecoveryState) -> Literal["consultation", "complete", "emergency"]:
+        """상담 후 라우팅"""
         
+        last_input = self._get_last_user_message(state)
+        
+        # 응급 상황 확인
+        if last_input:
+            urgency = self.emergency_handler.detect_emergency(last_input)
+            if urgency >= 9:
+                return "emergency"
+        
+        current_step = state.get("current_step", "")
         turns = state.get("conversation_turns", 0)
-        if turns >= 10:
+        
+        # 완료 조건 확인
+        if (current_step == "consultation_complete" or 
+            self.consultation_strategy.is_complete() or 
+            turns >= 12):
             return "complete"
         
+        # 상담 계속
         return "consultation"
 
     # ========================================================================

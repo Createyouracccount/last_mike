@@ -1,8 +1,5 @@
 """
-업데이트된 Conversation Manager - SOLID 원칙 적용
-- 단일 책임: STT → AI → TTS 파이프라인 관리만 담당
-- 의존성 주입: AI 두뇌를 외부에서 주입받음
-- 인터페이스 분리: 명확한 콜백 인터페이스
+수정된 Conversation Manager - 올바른 LangGraph 노드 실행
 """
 
 import asyncio
@@ -15,21 +12,12 @@ from typing import Optional, Dict, Any, Callable, Protocol
 from enum import Enum
 
 from services.stream_stt import RTZROpenAPIClient
-
-# 수정
-# from core.graph import VoiceFriendlyPhishingGraph
-
 from core.graph import VoiceFriendlyPhishingGraph
-
 from services.tts_service import tts_service
 from services.audio_manager import audio_manager
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
-
-# ============================================================================
-# 인터페이스 정의 (SOLID - 인터페이스 분리 원칙)
-# ============================================================================
 
 class ConversationState(Enum):
     """대화 상태"""
@@ -39,64 +27,17 @@ class ConversationState(Enum):
     SPEAKING = "speaking"
     ERROR = "error"
 
-class IConversationCallbacks(Protocol):
-    """대화 콜백 인터페이스"""
-    def on_user_speech(self, text: str) -> None:
-        """사용자 음성 콜백"""
-        ...
-    
-    def on_ai_response(self, response: str) -> None:
-        """AI 응답 콜백"""
-        ...
-    
-    def on_state_change(self, old_state: ConversationState, new_state: ConversationState) -> None:
-        """상태 변경 콜백"""
-        ...
-    
-    def on_error(self, error: Exception) -> None:
-        """에러 콜백"""
-        ...
-
-class IAIBrain(Protocol):
-    """AI 두뇌 인터페이스"""
-    async def process_user_input(self, user_input: str) -> str:
-        """사용자 입력 처리"""
-        ...
-    
-    def get_initial_greeting(self) -> str:
-        """초기 인사"""
-        ...
-    
-    def get_farewell_message(self) -> str:
-        """마무리 메시지"""
-        ...
-    
-    def is_conversation_complete(self) -> bool:
-        """대화 완료 여부"""
-        ...
-
-# ============================================================================
-# 안전한 대화 매니저 (SOLID 원칙 적용)
-# ============================================================================
-
-class VoiceFriendlyConversationManager:
+class FixedVoiceFriendlyConversationManager:
     """
-    안전한 음성 대화 매니저
-    - 단일 책임: 파이프라인 오케스트레이션만 담당
-    - 의존성 주입: AI 두뇌와 콜백을 외부에서 주입
-    - 안전장치: 무한루프 방지, 에러 복구
+    수정된 음성 대화 매니저 - 올바른 LangGraph 노드 실행
     """
     
-    def __init__(self, 
-                 client_id: str, 
-                 client_secret: str,
-                 ai_brain: Optional[IAIBrain] = None):
-        
+    def __init__(self, client_id: str, client_secret: str):
         self.client_id = client_id
         self.client_secret = client_secret
         
-        # 의존성 주입 (의존 역전 원칙)
-        self.ai_brain = ai_brain or VoiceFriendlyPhishingGraph(debug=settings.DEBUG)
+        # 🔥 핵심: AI 두뇌를 올바르게 사용
+        self.ai_brain = VoiceFriendlyPhishingGraph(debug=settings.DEBUG)
         self.tts_service = tts_service
         self.audio_manager = audio_manager
         
@@ -105,17 +46,26 @@ class VoiceFriendlyConversationManager:
         self.stt_queue = queue.Queue(maxsize=5)
         self.stt_thread: Optional[threading.Thread] = None
 
-        # 상태 관리 (단일 책임)
+        # 상태 관리
         self.state = ConversationState.IDLE
         self.is_running = False
         self.is_processing = False
-        self.initialization_complete = False # 초기화 완료 상태 추가
-        self.error_count = 0 # 오류 카운트 추가
+        self.initialization_complete = False
+        self.error_count = 0
+
+        # 🔥 핵심: LangGraph 상태 관리
+        self.current_graph_state = None
+        self.session_id = None
 
         # 콜백 관리
-        self.callbacks: Dict[str, Optional[Callable]] = {}
+        self.callbacks: Dict[str, Optional[Callable]] = {
+            'on_user_speech': None,
+            'on_ai_response': None,
+            'on_state_change': None,
+            'on_error': None
+        }
         
-        # (중요) 성능 통계 딕셔너리 - get_conversation_status 와 호환되도록 수정
+        # 성능 통계
         self.stats = {
             'conversation_start_time': None,
             'initialization_attempts': 0,
@@ -126,69 +76,7 @@ class VoiceFriendlyConversationManager:
             'tts_errors': 0,
         }
         
-        logger.info("✅ 안전한 대화 매니저 초기화 완료")
-
-    # ========================================================================
-    # 의존성 주입 및 설정 (SOLID - 의존 역전 원칙)
-    # ========================================================================
-    
-    def set_ai_brain(self, ai_brain: IAIBrain) -> None:
-        """AI 두뇌 주입"""
-        self.ai_brain = ai_brain
-        logger.info("🧠 AI 두뇌 주입 완료")
-    
-    def set_callbacks(self, callbacks: IConversationCallbacks) -> None:
-        """콜백 주입"""
-        self.callbacks = callbacks
-        logger.info("📞 콜백 설정 완료")
-
-    # def stats(self) -> Dict[str, Any]:
-    #     """현재 통계 정보를 반환합니다."""
-    #     return self.statistics
-    
-    def set_callbacks_legacy(self, 
-                           on_user_speech: Optional[Callable] = None,
-                           on_ai_response: Optional[Callable] = None, 
-                           on_state_change: Optional[Callable] = None,
-                           on_error: Optional[Callable] = None) -> None:
-        """레거시 콜백 설정 (하위 호환성)"""
-        
-        class LegacyCallbacks:
-            def __init__(self):
-                self.user_speech_fn = on_user_speech
-                self.ai_response_fn = on_ai_response
-                self.state_change_fn = on_state_change
-                self.error_fn = on_error
-            
-            def on_user_speech(self, text: str) -> None:
-                if self.user_speech_fn:
-                    try:
-                        self.user_speech_fn(text)
-                    except Exception as e:
-                        logger.warning(f"사용자 음성 콜백 오류: {e}")
-            
-            def on_ai_response(self, response: str) -> None:
-                if self.ai_response_fn:
-                    try:
-                        self.ai_response_fn(response)
-                    except Exception as e:
-                        logger.warning(f"AI 응답 콜백 오류: {e}")
-            
-            def on_state_change(self, old_state: ConversationState, new_state: ConversationState) -> None:
-                if self.state_change_fn:
-                    try:
-                        self.state_change_fn(old_state, new_state)
-                    except Exception as e:
-                        logger.warning(f"상태 변경 콜백 오류: {e}")
-            
-            def on_error(self, error: Exception) -> None:
-                if self.error_fn:
-                    try:
-                        self.error_fn(error)
-                    except Exception as e:
-                        logger.warning(f"에러 콜백 오류: {e}")
-        
-        self.callbacks = LegacyCallbacks()
+        logger.info("✅ 수정된 대화 매니저 초기화 완료")
 
     async def initialize(self) -> bool:
         """개선된 파이프라인 초기화"""
@@ -196,35 +84,26 @@ class VoiceFriendlyConversationManager:
         logger.info(f"🎬 음성 대화 파이프라인 초기화 (시도 {self.stats['initialization_attempts']})...")
         
         try:
-            # 1. 오디오 매니저 먼저 초기화
+            # 1. 오디오 매니저 초기화
             logger.info("🔊 오디오 매니저 초기화 중...")
             if not self.audio_manager.initialize_output():
                 logger.error("❌ 오디오 파이프라인 실패")
                 return False
             logger.info("✅ 오디오 파이프라인 준비")
             
-            # 2. AI 두뇌 초기화
-            logger.info("🧠 AI 두뇌 초기화 중...")
-            try:
-                # AI 두뇌 테스트
-                test_response = await asyncio.wait_for(
-                    self.ai_brain.process_user_input("초기화 테스트"),
-                    timeout=5.0
-                )
-                if test_response:
-                    logger.info("✅ AI 두뇌 준비 완료")
-                else:
-                    logger.warning("⚠️ AI 두뇌 응답 없음 - 기본 모드로 진행")
-            except Exception as e:
-                logger.warning(f"⚠️ AI 두뇌 초기화 경고: {e} - 기본 모드로 진행")
-            
-            # 3. STT 클라이언트 생성 (스트림은 나중에)
+            # 2. STT 클라이언트 생성
             logger.info("🎤 STT 클라이언트 생성 중...")
             self.stt_client = RTZROpenAPIClient(self.client_id, self.client_secret)
             logger.info("✅ STT 클라이언트 준비")
             
-            # 4. 초기 인사 (AI 인사말 사용)
-            await self._deliver_initial_greeting()
+            # 🔥 핵심 수정: LangGraph 세션 시작
+            logger.info("🧠 LangGraph 세션 시작 중...")
+            self.session_id = f"voice_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            self.current_graph_state = await self.ai_brain.start_conversation(self.session_id)
+            logger.info(f"✅ LangGraph 세션 시작: {self.session_id}")
+            
+            # 4. 초기 인사 (LangGraph에서 생성된 메시지 사용)
+            await self._deliver_langgraph_greeting()
             
             self.initialization_complete = True
             self.stats['conversation_start_time'] = datetime.now()
@@ -237,6 +116,28 @@ class VoiceFriendlyConversationManager:
             logger.error(f"❌ 파이프라인 초기화 실패: {e}")
             return False
 
+    async def _deliver_langgraph_greeting(self):
+        """LangGraph에서 생성된 초기 인사 전달"""
+        try:
+            # LangGraph 상태에서 마지막 AI 메시지 가져오기
+            if self.current_graph_state and self.current_graph_state.get("messages"):
+                messages = self.current_graph_state["messages"]
+                for msg in reversed(messages):
+                    if msg.get("role") == "assistant":
+                        greeting_text = msg.get("content", "")
+                        if greeting_text:
+                            await self._safe_tts_delivery(greeting_text)
+                            logger.info("✅ LangGraph 초기 인사 전달 완료")
+                            return
+            
+            # 폴백: 기본 인사
+            fallback_greeting = "안녕하세요. 보이스피싱 상담센터입니다. 1번 또는 2번을 선택해주세요."
+            await self._safe_tts_delivery(fallback_greeting)
+            logger.warning("⚠️ LangGraph 인사 없음 - 폴백 사용")
+            
+        except Exception as e:
+            logger.error(f"초기 인사 전달 실패: {e}")
+
     async def start_conversation(self):
         """대화 시작"""
         if not await self.initialize():
@@ -247,7 +148,7 @@ class VoiceFriendlyConversationManager:
         logger.info("🎙️ 음성 대화 시작")
         
         try:
-            # STT 입력 시작 (초기화 완료 후)
+            # STT 입력 시작
             self._start_stt_input_safe()
             
             # 메인 루프
@@ -270,7 +171,6 @@ class VoiceFriendlyConversationManager:
                 try:
                     logger.info(f"🎤 STT 스트림 시작 시도 {retry_count + 1}/{max_retries}")
                     
-                    # 스트림 리셋
                     if self.stt_client:
                         self.stt_client.reset_stream()
                     
@@ -278,16 +178,12 @@ class VoiceFriendlyConversationManager:
                         if is_final and transcript.alternatives:
                             text = transcript.alternatives[0].text.strip()
                             if text and len(text) > 1:
-                                # 안전한 큐 추가
                                 self._safe_add_to_queue(text)
                                 logger.debug(f"🎤 STT 입력: {text}")
                     
                     self.stt_client.print_transcript = transcript_handler
-                    
-                    # 스트림 시작
                     self.stt_client.transcribe_streaming_grpc()
                     
-                    # 여기까지 오면 성공
                     logger.info("✅ STT 스트림 성공적으로 시작됨")
                     break
                     
@@ -298,12 +194,11 @@ class VoiceFriendlyConversationManager:
                     
                     if retry_count < max_retries:
                         logger.info(f"🔄 {retry_count + 1}초 후 STT 재시도...")
-                        time.sleep(retry_count + 1)  # 점진적 대기
+                        time.sleep(retry_count + 1)
                     else:
                         logger.error("❌ STT 스트림 최대 재시도 횟수 초과")
                         break
         
-        # STT 스레드 시작
         self.stt_thread = threading.Thread(
             target=stt_worker, 
             daemon=True, 
@@ -318,7 +213,6 @@ class VoiceFriendlyConversationManager:
             if not self.stt_queue.full():
                 self.stt_queue.put_nowait(text)
             else:
-                # 오래된 항목 제거 후 추가
                 try:
                     self.stt_queue.get_nowait()
                     self.stt_queue.put_nowait(text)
@@ -341,15 +235,16 @@ class VoiceFriendlyConversationManager:
                 
                 if user_input and not self.is_processing:
                     logger.info(f"👤 사용자 입력 감지: {user_input}")
-                    await self._safe_process_input(user_input)
+                    # 🔥 핵심: LangGraph 노드 시스템 사용
+                    await self._process_through_langgraph(user_input)
                 
-                # AI 대화 완료 확인 (안전하게)
-                if await self._check_conversation_complete():
+                # 대화 완료 확인
+                if self._check_conversation_complete():
                     logger.info("✅ 대화 완료 신호 감지")
                     break
                 
                 await asyncio.sleep(0.1)
-                consecutive_errors = 0  # 성공 시 리셋
+                consecutive_errors = 0
                         
             except Exception as e:
                 consecutive_errors += 1
@@ -368,8 +263,8 @@ class VoiceFriendlyConversationManager:
         except queue.Empty:
             return None
 
-    async def _safe_process_input(self, user_input: str):
-        """안전한 입력 처리"""
+    async def _process_through_langgraph(self, user_input: str):
+        """🔥 핵심: LangGraph 노드 시스템을 통한 처리"""
         self.is_processing = True
         self._set_state(ConversationState.PROCESSING)
         
@@ -383,11 +278,19 @@ class VoiceFriendlyConversationManager:
                 except Exception as e:
                     logger.warning(f"사용자 입력 콜백 오류: {e}")
             
-            # AI 처리
-            ai_response = await self._safe_ai_processing(user_input)
+            # 🔥 핵심: LangGraph의 continue_conversation 사용
+            logger.info("🧠 LangGraph 노드 시스템으로 처리 중...")
+            
+            self.current_graph_state = await self.ai_brain.continue_conversation(
+                self.current_graph_state, 
+                user_input
+            )
+            
+            # 🔥 핵심: LangGraph 상태에서 AI 응답 추출
+            ai_response = self._extract_latest_ai_response()
             
             if ai_response:
-                logger.info(f"🤖 AI 응답: {ai_response}")
+                logger.info(f"🤖 LangGraph AI 응답: {ai_response}")
                 
                 # AI 응답 콜백
                 if self.callbacks['on_ai_response']:
@@ -398,36 +301,40 @@ class VoiceFriendlyConversationManager:
                 
                 # TTS 처리
                 await self._safe_tts_delivery(ai_response)
+            else:
+                logger.warning("LangGraph에서 AI 응답을 생성하지 못함")
             
             # 통계 업데이트
             processing_time = time.time() - start_time
             self._update_pipeline_stats(processing_time)
             
         except Exception as e:
-            logger.error(f"입력 처리 오류: {e}")
+            logger.error(f"LangGraph 처리 오류: {e}")
             await self._handle_processing_error(e)
         finally:
             self.is_processing = False
             self._set_state(ConversationState.LISTENING)
 
-    async def _safe_ai_processing(self, user_input: str) -> str:
-        """안전한 AI 처리"""
+    def _extract_latest_ai_response(self) -> Optional[str]:
+        """LangGraph 상태에서 최신 AI 응답 추출"""
         try:
-            # 타임아웃 적용
-            ai_response = await asyncio.wait_for(
-                self.ai_brain.process_user_input(user_input),
-                timeout=8.0  # 8초 타임아웃
-            )
-            return ai_response or "132번으로 상담받으세요."
+            if not self.current_graph_state or not self.current_graph_state.get("messages"):
+                return None
             
-        except asyncio.TimeoutError:
-            logger.warning("⏰ AI 처리 시간 초과")
-            self.stats['ai_errors'] += 1
-            return "처리 시간이 초과되었습니다. 132번으로 연락주세요."
+            messages = self.current_graph_state["messages"]
+            
+            # 마지막 AI 메시지 찾기
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", "").strip()
+                    if content:
+                        return content
+            
+            return None
+            
         except Exception as e:
-            logger.error(f"AI 처리 오류: {e}")
-            self.stats['ai_errors'] += 1
-            return "일시적 문제가 발생했습니다. 132번으로 연락주세요."
+            logger.error(f"AI 응답 추출 오류: {e}")
+            return None
 
     async def _safe_tts_delivery(self, response_text: str):
         """안전한 TTS 전달"""
@@ -438,56 +345,27 @@ class VoiceFriendlyConversationManager:
                 print(f"🤖 {response_text}")
                 return
             
-            # TTS 처리
             try:
                 audio_stream = self.tts_service.text_to_speech_stream(response_text)
-                
-                # 오디오 재생
                 await self.audio_manager.play_audio_stream(audio_stream)
                 
             except Exception as tts_error:
                 logger.error(f"TTS 처리 오류: {tts_error}")
-                print(f"🤖 {response_text}")  # 폴백
+                print(f"🤖 {response_text}")
                 self.stats['tts_errors'] += 1
                 
         except Exception as e:
             logger.error(f"TTS 전달 오류: {e}")
-            print(f"🤖 {response_text}")  # 최종 폴백
+            print(f"🤖 {response_text}")
 
-    async def _deliver_initial_greeting(self):
-        """초기 인사 전달 - AI에게 완전 위임"""
-        try:
-            # 🔧 수정: AI에게 초기 인사 요청
-            ai_response = await self._safe_ai_processing("__INITIAL_GREETING__")
-            
-            if ai_response and "132번으로" not in ai_response:
-                await self._safe_tts_delivery(ai_response)
-                logger.info("✅ AI 초기 인사 전달 완료")
-            else:
-                # AI 실패 시 폴백
-                fallback_greeting = """안녕하세요. 보이스피싱 상담센터입니다.
-
-1번 또는 2번을 선택해주세요.
-
-1번: 피해 체크리스트
-2번: 일반 상담"""
-                await self._safe_tts_delivery(fallback_greeting)
-                logger.warning("⚠️ AI 인사 실패 - 폴백 사용")
-            
-        except Exception as e:
-            logger.error(f"초기 인사 전달 실패: {e}")
-            # 최종 폴백
-            final_fallback = "상담센터입니다. 1번 또는 2번을 선택해주세요."
-            await self._safe_tts_delivery(final_fallback)
-
-    async def _check_conversation_complete(self) -> bool:
+    def _check_conversation_complete(self) -> bool:
         """대화 완료 여부 확인"""
         try:
-            if hasattr(self.ai_brain, 'is_conversation_complete'):
-                return self.ai_brain.is_conversation_complete()
+            # 🔥 핵심: LangGraph AI 두뇌의 완료 여부 확인
+            return self.ai_brain.is_conversation_complete()
         except Exception as e:
             logger.debug(f"대화 완료 확인 오류 (무시됨): {e}")
-        return False
+            return False
 
     async def _handle_processing_error(self, error: Exception):
         """처리 오류 핸들링"""
@@ -499,7 +377,6 @@ class VoiceFriendlyConversationManager:
             except Exception:
                 pass
         
-        # 폴백 응답
         fallback_response = "일시적 문제가 발생했습니다. 132번으로 연락주세요."
         await self._safe_tts_delivery(fallback_response)
 
@@ -554,11 +431,12 @@ class VoiceFriendlyConversationManager:
             "elapsed_time": elapsed_time,
             "total_turns": self.stats['total_pipeline_runs'],
             "avg_response_time": self.stats['avg_pipeline_time'],
-            "fast_response_rate": f"{(self.stats['total_pipeline_runs'] - self.stats['ai_errors'] - self.stats['tts_errors']) / max(self.stats['total_pipeline_runs'], 1) * 100:.1f}%",
             "error_count": self.error_count,
             "stt_errors": self.stats['stt_errors'],
             "ai_errors": self.stats['ai_errors'],
-            "tts_errors": self.stats['tts_errors']
+            "tts_errors": self.stats['tts_errors'],
+            "current_graph_state": self.current_graph_state.get("current_step") if self.current_graph_state else None,
+            "session_id": self.session_id
         }
 
     def get_audio_status(self) -> dict:
@@ -602,12 +480,12 @@ class VoiceFriendlyConversationManager:
             except Exception as e:
                 logger.warning(f"오디오 정리 오류: {e}")
             
-            # AI 정리
+            # 🔥 핵심: LangGraph AI 정리
             try:
-                if hasattr(self.ai_brain, 'cleanup'):
+                if self.ai_brain:
                     await self.ai_brain.cleanup()
             except Exception as e:
-                logger.warning(f"AI 정리 오류: {e}")
+                logger.warning(f"LangGraph 정리 오류: {e}")
             
             # 최종 통계
             self._print_final_stats()
@@ -631,5 +509,7 @@ class VoiceFriendlyConversationManager:
             logger.info(f"   AI 오류: {self.stats['ai_errors']}")
             logger.info(f"   TTS 오류: {self.stats['tts_errors']}")
 
+
 # 하위 호환성
-ConversationManager = VoiceFriendlyConversationManager
+VoiceFriendlyConversationManager = FixedVoiceFriendlyConversationManager
+ConversationManager = FixedVoiceFriendlyConversationManager
