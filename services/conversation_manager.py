@@ -15,7 +15,12 @@ from typing import Optional, Dict, Any, Callable, Protocol
 from enum import Enum
 
 from services.stream_stt import RTZROpenAPIClient
+
+# 수정
+# from core.graph import VoiceFriendlyPhishingGraph
+
 from core.graph import VoiceFriendlyPhishingGraph
+
 from services.tts_service import tts_service
 from services.audio_manager import audio_manager
 from config.settings import settings

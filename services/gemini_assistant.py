@@ -67,16 +67,14 @@ class AlternativeStrategy:
     """대안 요청 전략"""
     
     def generate_prompt(self, user_input: str, context: Dict[str, Any]) -> str:
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼ 이 메서드 전체를 교체하세요 ▼▼▼▼▼▼▼▼▼▼▼▼▼
+        last_ai_response = context.get("last_ai_response", "없음")
+        
         return f"""사용자가 다른 방법을 요청했습니다: "{user_input}"
+AI의 이전 답변은 "{last_ai_response}" 이었습니다.
+이전 답변과 겹치지 않는 새로운 해결책을 80자 이내로 제시하고, 사용자가 궁금해할 만한 다음 질문을 제안하세요.
+JSON 형식으로 응답: {{"response": "80자 이내 대안 제시", "next_suggestion": "사용자가 다음으로 물어볼 만한 질문"}}"""
 
-기존 제안과 다른 실용적인 대안을 80자 이내로 제시하세요:
-
-- 132번 상담 외에 → 1811-0041번 지원 신청
-- PASS 앱 외에 → mSAFER 서비스 이용
-- 예방 방법 외에 → 사후 대처 방법
-- 개인 조치 외에 → 전문기관 도움
-
-JSON 형식으로 응답: {{"response": "80자 이내 대안 제시"}}"""
     
     def validate_response(self, response: str) -> bool:
         """대안 응답 검증"""
@@ -153,16 +151,15 @@ class OptimizedGeminiAssistant:
         # 기본 시스템 프롬프트
         self.base_prompt = """당신은 보이스피싱 전문 상담원입니다.
 
-핵심 서비스:
-- 132번: 대한법률구조공단 무료 상담
-- 1811-0041번: 보이스피싱제로 생활비 지원
-- PASS 앱: 명의도용방지서비스
-- mSAFER: 휴대폰 명의도용 차단
-
 규칙:
-1. 80자 이내 응답 (음성 친화적)
-2. 실용적이고 즉시 실행 가능한 조치 제시
-3. 반드시 JSON 형식으로 응답"""
+1. 80자 이내로 핵심만 간결하게 응답합니다.
+2. 사용자가 다음에 무엇을 물어보면 좋을지 "next_suggestion"으로 항상 제안합니다.
+3. 반드시 아래 JSON 형식으로만 응답합니다.
+
+{
+  "response": "사용자 질문에 대한 핵심 답변 (80자 이내)",
+  "next_suggestion": "사용자가 다음으로 궁금해할 만한 질문 (예: 지원금 신청 방법)"
+}"""
         
         # 성능 통계
         self.stats = {

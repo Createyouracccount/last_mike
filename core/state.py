@@ -40,7 +40,8 @@ class VictimRecoveryState(TypedDict):
     damage_confirmed: bool
     damage_date: Optional[datetime]
     scammer_account: Optional[str]  # 사기범 계좌번호
-    
+    lost_money : Optional[int] # 잃은 돈 얼마인지
+
     # 은행 정보
     victim_bank: Optional[str]      # 피해자 은행
     scammer_bank: Optional[str]     # 사기범 계좌 은행
@@ -101,6 +102,8 @@ def create_initial_recovery_state(session_id: str) -> VictimRecoveryState:
         damage_confirmed=False,
         damage_date=None,
         scammer_account=None,
+
+        lost_money=None,
         
         # 은행 정보
         victim_bank=None,
@@ -140,7 +143,7 @@ def create_initial_recovery_state(session_id: str) -> VictimRecoveryState:
         audio_quality=0.0,
         
         # 긴급도
-        urgency_level=5,
+        urgency_level=5, # 기본값 5로 설정
         
         # 보안
         additional_security_needed=False,

@@ -21,9 +21,13 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
 from langgraph.graph import StateGraph, START, END
-from core.state import VictimRecoveryState, create_initial_recovery_state
 
-from core.hybrid_decision import SimplifiedHybridDecisionEngine
+# 수정
+# from core.state import VictimRecoveryState, create_initial_recovery_state
+# from core.hybrid_decision import SimplifiedHybridDecisionEngine
+
+from .state import VictimRecoveryState, create_initial_recovery_state
+from .hybrid_decision import SimplifiedHybridDecisionEngine
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +105,10 @@ class VictimInfoAssessment:
                 "type": "yes_no",
                 "urgent_if_no": True
             },
+            
             {
                 "id": "pass_app",
-                "question": "PASS 앱 설치되어 있나요? 네 또는 아니요로 답해주세요.",
+                "question": "패스(PASS) 앱 설치되어 있나요? 네 또는 아니요로 답해주세요.",
                 "type": "yes_no",
                 "action_needed": True
             }
@@ -213,7 +218,9 @@ class EmergencyHandler:
     def __init__(self):
         self.emergency_keywords = {
             "high": ["돈", "송금", "보냈", "이체", "급해", "사기", "당했"],
+
             "medium": ["의심", "이상", "전화", "문자", "피싱"],
+            
             "time_critical": ["방금", "지금", "분전", "시간전", "오늘"]
         }
         
@@ -335,7 +342,7 @@ class PersonalizedConsultationStrategy:
             from services.gemini_assistant import gemini_assistant
             
             if not gemini_assistant.is_enabled:
-                return self._get_rule_based_response(user_input) # 여기도 수정
+                return self._get_rule_based_response(user_input)
             
             # Gemini에 상황 정보 제공
             enhanced_context = {
@@ -349,16 +356,20 @@ class PersonalizedConsultationStrategy:
                 timeout=3.0
             )
             
-            response = result.get("response", "")
-            if response and len(response) <= 80:
-                return response
+            response_text = result.get("response", "")
+            suggestion_text = result.get("next_suggestion", "")
+
+            if response_text and suggestion_text:
+                # 추천 질문이 있다면, 자연스럽게 안내 문구를 추가합니다.
+                return f"{response_text}\n\n다음으로는 '{suggestion_text}'에 대해 물어보실 수 있어요."
+            elif response_text:
+                # 답변만 있다면 답변만 반환합니다.
+                return response_text
             
         except Exception as e:
             logger.warning(f"Gemini 처리 실패: {e}")
         
-        # 폴백: 룰 기반
-        # return self._get_rule_based_response(user_input, "general")
-        # return self._get_rule_based_response(user_input)
+        return self._get_rule_based_response(user_input)
     
     def is_complete(self) -> bool:
         """대화 완료 여부"""
@@ -475,9 +486,18 @@ class VoiceFriendlyPhishingGraph:
     
     async def _handle_consultation_mode(self, user_input: str) -> str:
         """상담 모드 처리"""
+
+        last_ai_message = ""
+        if self.current_state and self.current_state.get("messages"):
+            for msg in reversed(self.current_state["messages"]):
+                if msg.get("role") == "assistant":
+                    last_ai_message = msg.get("content", "")
+                    break
+
         context = {
             "urgency_level": 5,
-            "conversation_turns": getattr(self.consultation_strategy, 'conversation_turns', 0)
+            "conversation_turns": getattr(self.consultation_strategy, 'conversation_turns', 0),
+            "last_ai_response": last_ai_message # Gemini에게 이전 답변을 알려줍니다.
         }
         
         response = await self.consultation_strategy.process_input(user_input, context)
@@ -497,12 +517,14 @@ class VoiceFriendlyPhishingGraph:
         workflow = StateGraph(VictimRecoveryState)
         
         # 노드들 추가
+        # workflow.add_node(START, "greeting")
         workflow.add_node("greeting", self._greeting_node)
         workflow.add_node("mode_selection", self._mode_selection_node)
         workflow.add_node("assessment", self._assessment_node)
         workflow.add_node("consultation", self._consultation_node)
         workflow.add_node("emergency", self._emergency_node)
         workflow.add_node("complete", self._complete_node)
+        # workflow.add_node("complete", END)
         
         # 엣지 구성
         workflow.add_edge(START, "greeting")
